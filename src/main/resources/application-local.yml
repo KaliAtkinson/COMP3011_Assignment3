@@ -3,4 +3,5 @@ logging:
     root: INFO
     '[edu.adelaide.kali]': DEBUG
 
-server.port: 8081
+server:
+  port: 8081
