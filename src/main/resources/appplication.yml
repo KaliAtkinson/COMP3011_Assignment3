@@ -1,0 +1,12 @@
+openai:
+  api:
+    url: https://api.openai.com/v1/audio/transcriptions
+    model: gpt-4o-mini-transcribe
+    key: ${OPENAI_API_KEY}
+
+server:
+  port: 8081
+
+spring:
+  application:
+    name: speech-to-text-app
