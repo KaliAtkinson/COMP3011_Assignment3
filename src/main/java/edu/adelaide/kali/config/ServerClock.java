@@ -4,7 +4,7 @@ import org.springframework.stereotype.Component;
 import java.lang.management.ManagementFactory;
 import java.time.Instant;
 
-@component
+@Component
 public class ServerClock {
 
     private final Instant startTime;
