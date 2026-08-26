@@ -2,3 +2,5 @@ logging:
   level:
     root: INFO
     '[edu.adelaide.kali]': DEBUG
+
+server.port: 8081
