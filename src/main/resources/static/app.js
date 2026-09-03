@@ -18,16 +18,35 @@ async function startRecording() {
         audioChunks.push(event.data);
     });
 
-    mediaRecorder.addEventListener('stop', () => {
+    mediaRecorder.addEventListener('stop', async () => {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        console.log('Recording stopped. Blob size:', audioBlob.size, 'bytes');
 
-        statusEl.textContent = 'Ready to record';
+        statusEl.textContent = 'Transcribing…';
         statusEl.classList.remove('recording');
         recordBtn.hidden = false;
         stopBtn.hidden = true;
 
-        // Stage 2 will send audioBlob to the backend here instead of just logging it
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.webm');
+
+        try {
+            const response = await fetch('/api/v1/transcribe', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error('Transcription failed: ' + response.status);
+            }
+
+            const data = await response.json();
+            document.getElementById('transcript').textContent = data.text;
+            statusEl.textContent = 'Ready to record';
+
+        } catch (err) {
+            console.error(err);
+            statusEl.textContent = 'Error — try again';
+        }
     });
 
     mediaRecorder.start();
