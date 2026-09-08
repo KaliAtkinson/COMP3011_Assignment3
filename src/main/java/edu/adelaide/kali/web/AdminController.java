@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import java.time.Duration;
 import java.time.Instant;
@@ -15,6 +16,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 
 @RestController
+@RequestMapping("/api/v1/admin")
 public class AdminController {
 
     private static final DateTimeFormatter MILLIS_FORMAT =
@@ -28,7 +30,7 @@ public class AdminController {
         this.shutdownCoordinator = shutdownCoordinator;
     }
 
-    @GetMapping("/api/v1/admin/uptime")
+    @GetMapping("/uptime")
     public UptimeResponse getUptime() {
         Instant start = serverClock.getStartTime();
         Instant now = Instant.now();
@@ -41,7 +43,7 @@ public class AdminController {
         );
     }
 
-    @PostMapping("/api/v1/admin/shutdown")
+    @PostMapping("/shutdown")
     public ResponseEntity<ShutdownResponse> shutdown() {
         shutdownCoordinator.requestShutdown();
         return ResponseEntity.status(HttpStatus.ACCEPTED)
