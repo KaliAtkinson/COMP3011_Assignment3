@@ -10,3 +10,6 @@ server:
 spring:
   application:
     name: speech-to-text-app
+  threads:
+    virtual:
+      enabled: true
