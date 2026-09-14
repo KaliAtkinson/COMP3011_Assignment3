@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +29,7 @@ class ConcurrentLoadTest {
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         CountDownLatch latch = new CountDownLatch(requestCount);
         AtomicInteger successCount = new AtomicInteger(0);
+        CopyOnWriteArrayList<String> failures = new CopyOnWriteArrayList<>();
 
         long startTime = System.nanoTime();
 
@@ -41,9 +43,11 @@ class ConcurrentLoadTest {
 
                     if (response.getStatusCode().is2xxSuccessful()) {
                         successCount.incrementAndGet();
+                    } else {
+                        failures.add("Non-2xx status: " + response.getStatusCode());
                     }
                 } catch (Exception ex) {
-                    // The assertion below checks total successes, so any failure surfaces there.
+                    failures.add(ex.getClass().getSimpleName() + ": " + ex.getMessage());
                 } finally {
                     latch.countDown();
                 }
@@ -53,6 +57,11 @@ class ConcurrentLoadTest {
         boolean allCompleted = latch.await(30, TimeUnit.SECONDS);
         long elapsedMillis = (System.nanoTime() - startTime) / 1_000_000;
         executor.shutdown();
+
+        if (!failures.isEmpty()) {
+            System.out.println("Failure details (" + failures.size() + " total):");
+            failures.forEach(System.out::println);
+        }
 
         assertTrue(allCompleted, "Not all requests completed within the 30-second timeout");
         assertEquals(requestCount, successCount.get(), "Some requests failed or did not return 2xx");
