@@ -4,10 +4,13 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
-import java.util.concurrent.CountDownLatch;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -25,7 +28,16 @@ class ConcurrentLoadTest {
     @Test
     void handlesOver200ConcurrentRequestsWithoutErrors() throws InterruptedException {
         int requestCount = 250;
-        RestClient client = RestClient.create();
+
+        HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .executor(Executors.newVirtualThreadPerTaskExecutor())
+            .build();
+
+        RestClient client = RestClient.builder()
+            .requestFactory(new JdkClientHttpRequestFactory(httpClient))
+            .build();
+
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         CountDownLatch latch = new CountDownLatch(requestCount);
         AtomicInteger successCount = new AtomicInteger(0);
@@ -47,7 +59,8 @@ class ConcurrentLoadTest {
                         failures.add("Non-2xx status: " + response.getStatusCode());
                     }
                 } catch (Exception ex) {
-                    failures.add(ex.getClass().getSimpleName() + ": " + ex.getMessage());
+                    failures.add(ex.getClass().getSimpleName() + ": " + ex.getMessage()
+                        + (ex.getCause() != null ? " | caused by: " + ex.getCause() : ""));
                 } finally {
                     latch.countDown();
                 }
