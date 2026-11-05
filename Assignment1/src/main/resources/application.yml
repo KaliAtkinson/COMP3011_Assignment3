@@ -1,0 +1,18 @@
+openai:
+  api:
+    url: https://api.openai.com/v1/audio/transcriptions
+    model: gpt-4o-mini-transcribe
+    key: ${OPENAI_API_KEY}
+
+server:
+  port: 8080
+  tomcat:
+    accept-count: 300
+    max-connections: 10000
+
+spring:
+  application:
+    name: speech-to-text-app
+  threads:
+    virtual:
+      enabled: true
