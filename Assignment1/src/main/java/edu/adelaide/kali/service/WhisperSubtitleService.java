@@ -1,5 +1,6 @@
 package edu.adelaide.kali.service;
 
+import edu.adelaide.kali.config.AudioUsageTracker;
 import edu.adelaide.kali.config.OpenAiProperties;
 import edu.adelaide.kali.dto.SubtitleResponse;
 import edu.adelaide.kali.exception.TranscriptionException;
@@ -25,10 +26,13 @@ import java.util.Map;
 public class WhisperSubtitleService implements SubtitleService {
     private final RestClient restClient;
     private final OpenAiProperties properties;
+    private final AudioUsageTracker usageTracker;
 
-    public WhisperSubtitleService(RestClient restClient, OpenAiProperties properties) {
+    public WhisperSubtitleService(RestClient restClient, OpenAiProperties properties,
+                                  AudioUsageTracker usageTracker) {
         this.restClient = restClient;
         this.properties = properties;
+        this.usageTracker = usageTracker;
     }
 
     @Override
@@ -55,12 +59,27 @@ public class WhisperSubtitleService implements SubtitleService {
             if (response == null || !(response.get("text") instanceof String)) {
                 throw new TranscriptionException("Whisper returned an invalid transcription response");
             }
-            return WhisperSubtitleMapper.fromVerboseJson(response);
+            SubtitleResponse subtitles = WhisperSubtitleMapper.fromVerboseJson(response);
+            // Count successful cloud calls, not failed uploads or local mock requests.
+            usageTracker.addSeconds(reportedUsageSeconds(response, subtitles.duration()));
+            return subtitles;
         } catch (TranscriptionException ex) {
             throw ex;
         } catch (Exception ex) {
             // Avoid leaking API headers, keys, or the uploaded audio in messages.
             throw new TranscriptionException("Unable to retrieve subtitles from Whisper");
         }
+    }
+
+    static double reportedUsageSeconds(Map<?, ?> response, double fallbackDuration) {
+        if (response.get("usage") instanceof Map<?, ?> usage
+                && usage.get("seconds") instanceof Number number) {
+            double seconds = number.doubleValue();
+            if (Double.isFinite(seconds) && seconds >= 0) {
+                return seconds;
+            }
+        }
+        // Some Whisper verbose_json responses give duration but no usage field.
+        return fallbackDuration;
     }
 }
