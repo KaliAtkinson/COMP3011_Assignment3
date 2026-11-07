@@ -16,6 +16,8 @@ import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import org.bytedeco.javacv.Frame;
 
 /**
@@ -28,19 +30,27 @@ import org.bytedeco.javacv.Frame;
  * concurrent effect workers. A single-entry cache avoids accumulating a
  * bitmap for every phrase of a long movie.
  *
- * <p>This class is intentionally not wired into the live player until the
- * command-line and subtitle lifecycle integration commit. Toggling a frame
- * processor in a prefetched pipeline alone is not an immediate on-screen
- * toggle: already-processed frames must also be considered at integration.
+ * <p>The live player supplies an enabled flag and a replacement timeline when
+ * cloud transcription completes. Already-decoded frames have been processed
+ * using the old state; the GUI must handle immediate hide/show for those frames
+ * when the toggle is connected.
  *
  * <p>AI Assistance: Developed with advice and code assistance from OpenAI ChatGPT.
  */
 public final class FrameSubtitleRenderer extends FrameProcessor {
-    private final SubtitleTimeline timeline;
+    private final Supplier<SubtitleTimeline> timeline;
+    private final BooleanSupplier enabled;
     private volatile CaptionBitmap cachedCaption;
 
+    /** Fixed timeline, useful for tests and independent frame-processing. */
     public FrameSubtitleRenderer(SubtitleTimeline timeline) {
+        this(() -> Objects.requireNonNull(timeline, "timeline"), () -> true);
+    }
+
+    /** Live timeline and enabled flag, safely read by decoder effect workers. */
+    public FrameSubtitleRenderer(Supplier<SubtitleTimeline> timeline, BooleanSupplier enabled) {
         this.timeline = Objects.requireNonNull(timeline, "timeline");
+        this.enabled = Objects.requireNonNull(enabled, "enabled");
     }
 
     @Override
@@ -53,10 +63,10 @@ public final class FrameSubtitleRenderer extends FrameProcessor {
     public void process(Frame frame, InfoFrame info) {
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(info, "info");
-        if (frame.image == null || frame.image.length == 0 || frame.image[0] == null) {
+        if (!enabled.getAsBoolean() || frame.image == null || frame.image.length == 0 || frame.image[0] == null) {
             return;
         }
-        var cue = timeline.atSeconds(info.timestampUs() / 1_000_000.0);
+        var cue = timeline.get().atSeconds(info.timestampUs() / 1_000_000.0);
         if (cue.isEmpty()) {
             return;
         }

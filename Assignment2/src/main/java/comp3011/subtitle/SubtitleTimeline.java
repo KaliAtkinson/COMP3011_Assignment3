@@ -35,6 +35,11 @@ public final class SubtitleTimeline {
         this.cues = List.copyOf(cues);
     }
 
+    /** Returns a reusable empty schedule while captions are unavailable. */
+    public static SubtitleTimeline empty() {
+        return new SubtitleTimeline(List.of());
+    }
+
     /**
      * Converts the server's phrase timestamps to a non-overlapping timeline.
      * An empty or silence-only transcription produces an empty timeline.

@@ -13,6 +13,7 @@ package comp3011;
 import java.io.File;
 import java.lang.ref.Reference;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Queue;
@@ -27,6 +28,9 @@ import org.bytedeco.javacv.JavaFXFrameConverter;
 
 import javafx.animation.AnimationTimer;
 import javafx.scene.image.Image;
+
+import comp3011.subtitle.FrameSubtitleRenderer;
+import comp3011.subtitle.SubtitlePlaybackSession;
 
 /**
  * The model part of the video player model-view-controller architecture.
@@ -66,6 +70,9 @@ public class VideoPlayerModel {
     private static final byte[] NO_AUDIO = new byte[0];
 
     private final List<FrameProcessor> frameProcessors;
+    // Transcription runs independently of the video decoder. Its immutable timeline
+    // is published to the subtitle effect workers once the server responds.
+    private final SubtitlePlaybackSession subtitleSession = new SubtitlePlaybackSession();
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -133,6 +140,7 @@ public class VideoPlayerModel {
     }
 
     public void play(File file) {
+        subtitleSession.load(file.toPath());
         videoFile = file;
         videoDurationUs = NO_SEEK_REQUEST;
         videoFrameDurationUs = 0;
@@ -192,6 +200,7 @@ public class VideoPlayerModel {
     }
 
     public void stopPlayback() {
+        subtitleSession.load(null);
         closePlaybackResources();
         currentTimestampUs = 0;
         pauseRequested = false;
@@ -201,7 +210,17 @@ public class VideoPlayerModel {
     }
 
     public void shutdown() {
+        subtitleSession.close();
         closePlaybackResources();
+    }
+
+    /** Called by the subtitle button/shortcut in the following UI commit. */
+    public void setSubtitlesEnabled(boolean enabled) {
+        subtitleSession.setEnabled(enabled);
+    }
+
+    public boolean areSubtitlesEnabled() {
+        return subtitleSession.isEnabled();
     }
 
     private void seekRelative(long offsetUs) {
@@ -282,7 +301,13 @@ public class VideoPlayerModel {
             audioPlayer.open(grabber.getSampleRate(), grabber.getAudioChannels());
         }
 
-        effectChain = new EffectChain(frameProcessors, new EffectChain.MediaProperties(
+        // The subtitle renderer is the final frame effect so its lettering is not
+        // changed by scratches, colour filters or other earlier processors.
+        // It becomes a no-op when subtitles are disabled or still downloading.
+        List<FrameProcessor> activeProcessors = new ArrayList<>(frameProcessors);
+        activeProcessors.add(new FrameSubtitleRenderer(subtitleSession::timeline,
+                subtitleSession::isEnabled));
+        effectChain = new EffectChain(activeProcessors, new EffectChain.MediaProperties(
                 mediaName(videoFile),
                 totalVideoFrames,
                 frameRate,

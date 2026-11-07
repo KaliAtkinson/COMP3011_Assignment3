@@ -69,6 +69,33 @@ class FrameSubtitleRendererTest {
     }
 
     @Test
+    void liveTimelineAppearsAfterTranscriptionAndStopsWhenDisabled() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<SubtitleTimeline> current =
+                new java.util.concurrent.atomic.AtomicReference<>(SubtitleTimeline.empty());
+        java.util.concurrent.atomic.AtomicBoolean enabled = new java.util.concurrent.atomic.AtomicBoolean(true);
+        FrameSubtitleRenderer renderer = new FrameSubtitleRenderer(current::get, enabled::get);
+        renderer.initialise(new InfoVideo("test.mp4", 240, WIDTH, HEIGHT, Frame.DEPTH_UBYTE, 3,
+                WIDTH * 3, 24, 24, 41667, 0));
+
+        Frame noTranscript = frame(100);
+        byte[] original = pixels(noTranscript);
+        renderer.process(noTranscript, new InfoFrame(1, 1_500_000));
+        assertArrayEquals(original, pixels(noTranscript));
+
+        SubtitleTranscript transcript = new SubtitleTranscript("New caption", 5,
+                List.of(new SubtitleTranscript.Segment(1, 3, "New caption", 0, 0)), List.of());
+        current.set(SubtitleTimeline.fromTranscript(transcript));
+        Frame withTranscript = frame(100);
+        renderer.process(withTranscript, new InfoFrame(2, 1_500_000));
+        assertFalse(Arrays.equals(original, pixels(withTranscript)));
+
+        enabled.set(false);
+        Frame turnedOff = frame(100);
+        renderer.process(turnedOff, new InfoFrame(3, 1_500_000));
+        assertArrayEquals(original, pixels(turnedOff));
+    }
+
+    @Test
     void preservesFourthAlphaChannel() throws Exception {
         FrameSubtitleRenderer renderer = renderer();
         Frame bgra = new Frame(WIDTH, HEIGHT, Frame.DEPTH_UBYTE, 4);
