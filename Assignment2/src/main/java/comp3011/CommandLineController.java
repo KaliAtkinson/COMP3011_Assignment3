@@ -30,6 +30,7 @@ public class CommandLineController {
     private boolean helpRequested;
     private boolean audioRequested;
     private boolean maximiseRequested;
+    private boolean subtitlesRequested;
     private Integer displayId;
     private File videoFile;
     private String errorMessage;
@@ -68,6 +69,11 @@ public class CommandLineController {
 
     public boolean isMaximiseRequested() {
         return maximiseRequested;
+    }
+
+    /** Subtitles are a live, toggleable processor rather than a fixed launch-time effect. */
+    public boolean isSubtitlesRequested() {
+        return subtitlesRequested;
     }
 
     /**
@@ -125,6 +131,7 @@ public class CommandLineController {
         switch (arg) {
             case "--help" -> helpRequested = true;
             case "--audio" -> audioRequested = true;
+            case "--subtitle-frames" -> subtitlesRequested = true;
             case "--maximise" -> maximiseRequested = true;
             case "--monitor-1" -> setDisplayId(1);
             case "--monitor-2" -> setDisplayId(2);
@@ -143,6 +150,7 @@ public class CommandLineController {
         switch (shortName) {
             case 'h' -> helpRequested = true;
             case 'a' -> audioRequested = true;
+            case 'S' -> subtitlesRequested = true;
             case 'x' -> maximiseRequested = true;
             case '1' -> setDisplayId(1);
             case '2' -> setDisplayId(2);
@@ -186,6 +194,9 @@ public class CommandLineController {
         for (FrameProcessorOption option : FrameProcessorCatalogue.options()) {
             System.out.printf("  -%c, %-19s%s%n", option.shortName(), option.longOption(), option.description());
         }
+        // The subtitle renderer is installed by the model and can be toggled
+        // during playback. It does not need a second processor instance for -S.
+        System.out.printf("  -S, %-19s%s%n", "--subtitle-frames", "Add speech-to-text subtitles to frames");
         System.out.println();
         System.out.println("Frame processors are applied in command-line order and may be repeated.");
         System.out.println("Example: -nssnfwyvdjmbp numbers, scratches twice, numbers again, flickers,");

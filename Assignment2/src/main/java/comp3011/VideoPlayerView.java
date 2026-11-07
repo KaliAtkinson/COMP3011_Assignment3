@@ -26,6 +26,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
 import javafx.scene.shape.Line;
 import javafx.scene.shape.Polygon;
 import javafx.scene.shape.SVGPath;
@@ -57,6 +59,7 @@ public class VideoPlayerView {
     private final Button forwardFiveButton;
     private final Button stopButton;
     private final Button audioButton;
+    private final Button subtitleButton;
 
     public VideoPlayerView() {
         imageView.setPreserveRatio(true);
@@ -75,6 +78,7 @@ public class VideoPlayerView {
         forwardFiveButton = iconButton(createLoopIcon(true, "5"));
         stopButton = iconButton(createStopIcon());
         audioButton = iconButton(createAudioIcon(false));
+        subtitleButton = iconButton(createSubtitleIcon(false));
         setPlaybackControlsDisabled(true);
 
         HBox controls = new HBox(
@@ -85,6 +89,7 @@ public class VideoPlayerView {
                 forwardFiveButton,
                 stopButton,
                 audioButton,
+                subtitleButton,
                 statusLabel);
 
         controls.setPadding(new Insets(10));
@@ -127,6 +132,10 @@ public class VideoPlayerView {
         return audioButton;
     }
 
+    public Button getSubtitleButton() {
+        return subtitleButton;
+    }
+
     public void setStatus(String status) {
         statusLabel.setText(status);
     }
@@ -151,6 +160,12 @@ public class VideoPlayerView {
         audioButton.setGraphic(createAudioIcon(audioEnabled));
     }
 
+    /** Keep the caption button in sync with both CLI defaults and live toggles. */
+    public void showSubtitlesEnabled(boolean enabled) {
+        subtitleButton.setGraphic(createSubtitleIcon(enabled));
+        subtitleButton.setAccessibleText(enabled ? "Turn subtitles off" : "Turn subtitles on");
+    }
+
     public void setPlaybackControlsDisabled(boolean disabled) {
         startOverButton.setDisable(disabled);
         backFiveButton.setDisable(disabled);
@@ -158,6 +173,7 @@ public class VideoPlayerView {
         forwardFiveButton.setDisable(disabled);
         stopButton.setDisable(disabled);
         audioButton.setDisable(disabled);
+        subtitleButton.setDisable(disabled);
     }
 
     // There are a bunch of tooltip handling methods starting from here. We want to use tooltips so that people with
@@ -169,6 +185,7 @@ public class VideoPlayerView {
         setButtonTooltip(forwardFiveButton, "[RIGHT]");
         setButtonTooltip(stopButton, "[ESC]");
         setButtonTooltip(audioButton, "[A]");
+        setButtonTooltip(subtitleButton, "[S]");
     }
 
     private void setButtonTooltip(Button button, String text) {
@@ -305,6 +322,28 @@ public class VideoPlayerView {
         GraphicsContext gc = canvas.getGraphicsContext2D();
         gc.setFill(Color.BLACK);
         gc.fillRect(9, 9, 11, 11);
+        return canvas;
+    }
+
+    // A small closed-caption badge, with a slash when captions are disabled.
+    // As with the other controls, both states use the same 28x28 graphic area.
+    private Canvas createSubtitleIcon(boolean enabled) {
+        Canvas canvas = new Canvas(ICON_SIZE, ICON_SIZE);
+        GraphicsContext gc = canvas.getGraphicsContext2D();
+        gc.setLineWidth(2.0);
+        gc.setStroke(Color.BLACK);
+        gc.strokeRoundRect(2.5, 5.5, 23, 17, 3, 3);
+        gc.setFont(Font.font("SansSerif", FontWeight.BOLD, 11));
+        gc.setFill(Color.BLACK);
+        gc.fillText("CC", 5.3, 18.2);
+        if (!enabled) {
+            gc.setLineWidth(2.3);
+            gc.setStroke(Color.WHITE);
+            gc.strokeLine(3, 24, 25, 3);
+            gc.setLineWidth(1.8);
+            gc.setStroke(Color.BLACK);
+            gc.strokeLine(3, 24, 25, 3);
+        }
         return canvas;
     }
 

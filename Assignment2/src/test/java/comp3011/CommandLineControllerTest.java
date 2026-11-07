@@ -63,6 +63,7 @@ class CommandLineControllerTest {
         assertTrue(c.shouldLaunchApplication());
         assertFalse(c.isAudioRequested());
         assertFalse(c.isMaximiseRequested());
+        assertFalse(c.isSubtitlesRequested());
         assertNull(c.getDisplayId());
         assertEquals(0, c.getExitCode());
     }
@@ -90,6 +91,35 @@ class CommandLineControllerTest {
         CommandLineController c = new CommandLineController(new String[] { video, "-a" });
         assertTrue(c.shouldLaunchApplication());
         assertTrue(c.isAudioRequested());
+    }
+
+    @Test
+    void subtitlesEnableViaUppercaseShortFlagButLowercaseSStillMeansScratches() {
+        CommandLineController c = new CommandLineController(new String[] { "-aSs", video });
+        assertTrue(c.shouldLaunchApplication());
+        assertTrue(c.isAudioRequested());
+        assertTrue(c.isSubtitlesRequested());
+        assertEquals("s", shorts(c));
+        assertEquals(1, c.createFrameProcessors().size());
+    }
+
+    @Test
+    void subtitlesEnableViaLongFlagAndDoNotDuplicateTheRenderer() {
+        CommandLineController c = new CommandLineController(new String[] {
+                "--subtitle-frames", "-S", "--subtitle-frames", video });
+        assertTrue(c.shouldLaunchApplication());
+        assertTrue(c.isSubtitlesRequested());
+        // The live subtitle renderer is created once by VideoPlayerModel.
+        assertTrue(c.getRequestedProcessors().isEmpty());
+    }
+
+    @Test
+    void subtitlesMayFollowVideoPathAndOtherEffectOptions() {
+        CommandLineController c = new CommandLineController(new String[] {
+                video, "--number-frames", "--subtitle-frames", "-s" });
+        assertTrue(c.shouldLaunchApplication());
+        assertTrue(c.isSubtitlesRequested());
+        assertEquals("ns", shorts(c));
     }
 
     @Test
@@ -238,6 +268,7 @@ class CommandLineControllerTest {
                   -m, --mottle-frames    Add cloudy emulsion mottling
                   -b, --bleed-frames     Bleed light into frames
                   -p, --pepper-frames    Pepper frames with dark spots/blotches
+                  -S, --subtitle-frames  Add speech-to-text subtitles to frames
 
                 Frame processors are applied in command-line order and may be repeated.
                 Example: -nssnfwyvdjmbp numbers, scratches twice, numbers again, flickers,

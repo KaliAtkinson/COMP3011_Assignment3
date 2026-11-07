@@ -34,6 +34,7 @@ public class VideoPlayerController {
 
     public VideoPlayerController(
             boolean audioEnabled,
+            boolean subtitlesInitiallyEnabled,
             List<FrameProcessor> frameProcessors,
             BiConsumer<Integer, Integer> videoSizeChangedHandler) {
         this.view = new VideoPlayerView();
@@ -47,13 +48,18 @@ public class VideoPlayerController {
                 this::onPlaybackStateChanged,
                 this::onAudioOutputStateChanged);
 
+        // Set the launch default before play(file) begins transcription.
+        model.setSubtitlesEnabled(subtitlesInitiallyEnabled);
+
         view.getStartOverButton().setOnAction(_ -> startOver());
         view.getBackFiveButton().setOnAction(_ -> backFiveSeconds());
         view.getPausePlayButton().setOnAction(_ -> togglePause());
         view.getForwardFiveButton().setOnAction(_ -> forwardFiveSeconds());
         view.getStopButton().setOnAction(_ -> stopAndExit());
         view.getAudioButton().setOnAction(_ -> toggleAudioOutput());
+        view.getSubtitleButton().setOnAction(_ -> toggleSubtitles());
         view.showAudioEnabled(model.isAudioOutputEnabled());
+        view.showSubtitlesEnabled(model.areSubtitlesEnabled());
     }
 
     public void installKeyboardShortcuts(Scene scene) {
@@ -75,6 +81,9 @@ public class VideoPlayerController {
                 event.consume();
             } else if (event.getCode() == KeyCode.A) {
                 toggleAudioOutput();
+                event.consume();
+            } else if (event.getCode() == KeyCode.S) {
+                toggleSubtitles();
                 event.consume();
             }
         });
@@ -111,6 +120,11 @@ public class VideoPlayerController {
 
     private void toggleAudioOutput() {
         model.toggleAudioOutput();
+    }
+
+    private void toggleSubtitles() {
+        model.setSubtitlesEnabled(!model.areSubtitlesEnabled());
+        view.showSubtitlesEnabled(model.areSubtitlesEnabled());
     }
 
     private void stopAndExit() {
