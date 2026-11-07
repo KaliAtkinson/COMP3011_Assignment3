@@ -150,14 +150,19 @@ class SubtitleTranscriptionCoordinatorTest {
         Path wav = directory.resolve("uploading.wav");
         CompletableFuture<Path> received = new CompletableFuture<>();
         CompletableFuture<SubtitleTranscript> server = new CompletableFuture<>();
-        SubtitleTranscriptionCoordinator coordinator = coordinator(path ->
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        SubtitleTranscriptionCoordinator coordinator = new SubtitleTranscriptionCoordinator(path ->
                 Files.writeString(wav, "test audio"), path -> {
                     received.complete(path);
                     return server;
-                });
+                }, worker);
         try {
             CompletableFuture<SubtitleTranscript> outcome = coordinator.transcribe(directory.resolve("movie.mp4"));
             received.get(5, TimeUnit.SECONDS);
+            // The upload callback is attached after the upload function returns.
+            // Wait for the extraction task to finish registering that callback
+            // before completing the simulated HTTP request.
+            worker.submit(() -> {}).get(5, TimeUnit.SECONDS);
             coordinator.close();
             assertTrue(outcome.isCancelled());
             assertTrue(Files.exists(wav), "Do not remove audio while HTTP might be reading it");
