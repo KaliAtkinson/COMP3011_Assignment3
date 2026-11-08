@@ -5,18 +5,36 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 
-/** Fixed test caption for local UI development; never calls or charges Whisper. */
+/**
+ * Repeat a clearly fake timed caption for local UI testing (no OpenAI calls).
+ * A single three-second cue can disappear before a long video's audio is
+ * extracted and uploaded. Periodic cues let developers verify toggling and
+ * seeking even when the mock response arrives after the first few seconds.
+ *
+ * AI Assistance: Developed with advice and code assistance from OpenAI ChatGPT.
+ */
 @Service
 @Profile("local")
 public class MockSubtitleService implements SubtitleService {
     @Override
     public SubtitleResponse transcribe(MultipartFile audioFile) {
-        return new SubtitleResponse("Local subtitle preview", 3.0,
-                List.of(new SubtitleResponse.Segment(0.0, 3.0, "Local subtitle preview", 0.0, 0.0)),
-                List.of(new SubtitleResponse.Word(0.0, 1.0, "Local"),
-                        new SubtitleResponse.Word(1.0, 2.0, "subtitle"),
-                        new SubtitleResponse.Word(2.0, 3.0, "preview")));
+        if (audioFile == null || audioFile.isEmpty()) {
+            throw new IllegalArgumentException("Audio file must not be empty");
+        }
+        List<SubtitleResponse.Segment> segments = new ArrayList<>();
+        List<SubtitleResponse.Word> words = new ArrayList<>();
+        // This is deliberately test data, not transcribed speech. It covers
+        // typical demo-video lengths and has gaps in which no text is shown.
+        for (int second = 0; second < 180; second += 10) {
+            segments.add(new SubtitleResponse.Segment(second, second + 6.0,
+                    "Local subtitle preview (mock server)", 0.0, 0.0));
+            words.add(new SubtitleResponse.Word(second, second + 6.0,
+                    "Local subtitle preview (mock server)"));
+        }
+        return new SubtitleResponse("Local subtitle preview (mock server)", 180.0,
+                segments, words);
     }
 }

@@ -1,7 +1,15 @@
+# The Assignment 3 player calls localhost:8080. Keep the offline mock on that
+# same port so local preview works without a separate port override.
+server:
+  port: 8080
+
+# Local profile uses MockSubtitleService/MockTranscriptionService and never
+# calls OpenAI. A placeholder avoids requiring an API key during UI testing.
+openai:
+  api:
+    key: local-mock-no-external-requests
+
 logging:
   level:
     root: INFO
     '[edu.adelaide.kali]': DEBUG
-
-server:
-  port: 8081
