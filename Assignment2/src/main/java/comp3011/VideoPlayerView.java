@@ -21,6 +21,10 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.image.PixelFormat;
+import javafx.scene.image.WritableImage;
+import comp3011.subtitle.FrameSubtitleRenderer;
+import comp3011.subtitle.SubtitleTimeline;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
@@ -48,6 +52,14 @@ public class VideoPlayerView {
     private static final int ICON_SIZE = 28;
 
     private final ImageView imageView = new ImageView();
+    // The separate transparent layer is never baked into the decoded image.
+    // This is essential for immediate toggles and subtitles arriving mid-playback.
+    private final ImageView subtitleImageView = new ImageView();
+    private final FrameSubtitleRenderer subtitleRasterizer =
+            new FrameSubtitleRenderer(SubtitleTimeline.empty());
+    private String shownSubtitle = "";
+    private int videoWidth;
+    private int videoHeight;
     private final Label statusLabel = new Label("No video loaded");
     private final Label tooltipLabel = new Label();
     private final Pane tooltipLayer = new Pane();
@@ -65,12 +77,17 @@ public class VideoPlayerView {
         imageView.setPreserveRatio(true);
         imageView.setSmooth(false);
 
-        videoPane = new StackPane(imageView);
+        subtitleImageView.setPreserveRatio(true);
+        subtitleImageView.setSmooth(true);
+        subtitleImageView.setMouseTransparent(true);
+        videoPane = new StackPane(imageView, subtitleImageView);
         videoPane.setStyle("-fx-background-color: black;");
         videoPane.setMinSize(0, 0);
         videoPane.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
         imageView.fitWidthProperty().bind(videoPane.widthProperty());
         imageView.fitHeightProperty().bind(videoPane.heightProperty());
+        subtitleImageView.fitWidthProperty().bind(videoPane.widthProperty());
+        subtitleImageView.fitHeightProperty().bind(videoPane.heightProperty());
 
         startOverButton = iconButton(createLoopIcon(false, null));
         backFiveButton = iconButton(createLoopIcon(false, "5"));
@@ -146,6 +163,35 @@ public class VideoPlayerView {
 
     public void setVideoDisplaySize(double width, double height) {
         videoPane.setPrefSize(width, height);
+        videoWidth = (int) width;
+        videoHeight = (int) height;
+        // A new video can have a different aspect ratio/resolution.
+        if (!shownSubtitle.isEmpty()) {
+            paintSubtitle();
+        }
+    }
+
+    /** Called on the JavaFX thread only when the visible caption changes. */
+    public void showSubtitle(String caption) {
+        String next = caption == null ? "" : caption;
+        if (shownSubtitle.equals(next)) {
+            return;
+        }
+        shownSubtitle = next;
+        paintSubtitle();
+    }
+
+    private void paintSubtitle() {
+        if (shownSubtitle.isBlank() || videoWidth <= 0 || videoHeight <= 0) {
+            subtitleImageView.setImage(null);
+            return;
+        }
+        // Rendering occurs only on phrase changes, not on every video frame.
+        int[] argb = subtitleRasterizer.overlayArgb(shownSubtitle, videoWidth, videoHeight);
+        WritableImage overlay = new WritableImage(videoWidth, videoHeight);
+        overlay.getPixelWriter().setPixels(0, 0, videoWidth, videoHeight,
+                PixelFormat.getIntArgbInstance(), argb, 0, videoWidth);
+        subtitleImageView.setImage(overlay);
     }
 
     public void showPauseAction() {

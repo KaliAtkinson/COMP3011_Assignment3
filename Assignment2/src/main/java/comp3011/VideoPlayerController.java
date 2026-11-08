@@ -44,6 +44,7 @@ public class VideoPlayerController {
                 frameProcessors,
                 this::onVideoSizeChanged,
                 this::onFrameReady,
+                this::onSubtitleChanged,
                 this::onStatusChanged,
                 this::onPlaybackStateChanged,
                 this::onAudioOutputStateChanged);
@@ -138,6 +139,10 @@ public class VideoPlayerController {
 
     private void onFrameReady(Image image) {
         view.setImage(image);
+    }
+
+    private void onSubtitleChanged(String caption) {
+        view.showSubtitle(caption);
     }
 
     private void onStatusChanged(String status) {

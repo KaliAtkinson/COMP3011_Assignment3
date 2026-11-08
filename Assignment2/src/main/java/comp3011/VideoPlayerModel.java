@@ -20,6 +20,9 @@ import java.util.Queue;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.net.ConnectException;
+import java.net.http.HttpTimeoutException;
+import java.util.concurrent.CompletionException;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -31,6 +34,7 @@ import javafx.scene.image.Image;
 
 import comp3011.subtitle.FrameSubtitleRenderer;
 import comp3011.subtitle.SubtitlePlaybackSession;
+import comp3011.subtitle.SubtitleDisplayState;
 
 /**
  * The model part of the video player model-view-controller architecture.
@@ -73,9 +77,13 @@ public class VideoPlayerModel {
     // Transcription runs independently of the video decoder. Its immutable timeline
     // is published to the subtitle effect workers once the server responds.
     private final SubtitlePlaybackSession subtitleSession = new SubtitlePlaybackSession();
+    // GUI-thread-only display state; never based on frames prefetched by the decoder.
+    private final SubtitleDisplayState subtitleDisplay = new SubtitleDisplayState();
+    private SubtitlePlaybackSession.RequestState lastReportedSubtitleState = SubtitlePlaybackSession.RequestState.IDLE;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
+    private final Consumer<String> subtitleChangedHandler;
     private final Consumer<String> statusChangedHandler;
     private final BiConsumer<Boolean, Boolean> playbackStateChangedHandler;
     private final Consumer<Boolean> audioOutputStateChangedHandler;
@@ -127,12 +135,14 @@ public class VideoPlayerModel {
             List<FrameProcessor> frameProcessors,
             BiConsumer<Integer, Integer> videoSizeChangedHandler,
             Consumer<Image> frameReadyHandler,
+            Consumer<String> subtitleChangedHandler,
             Consumer<String> statusChangedHandler,
             BiConsumer<Boolean, Boolean> playbackStateChangedHandler,
             Consumer<Boolean> audioOutputStateChangedHandler) {
         audioOutputEnabled = audioEnabled;
         this.videoSizeChangedHandler = videoSizeChangedHandler;
         this.frameReadyHandler = frameReadyHandler;
+        this.subtitleChangedHandler = subtitleChangedHandler;
         this.statusChangedHandler = statusChangedHandler;
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
@@ -140,11 +150,14 @@ public class VideoPlayerModel {
     }
 
     public void play(File file) {
+        lastReportedSubtitleState = SubtitlePlaybackSession.RequestState.IDLE;
+        clearSubtitleOverlay();
         subtitleSession.load(file.toPath());
         videoFile = file;
         videoDurationUs = NO_SEEK_REQUEST;
         videoFrameDurationUs = 0;
         startPlayback(0, false, NO_SEEK_REQUEST);
+        reportSubtitleRequestState();
     }
 
     public void startOver() {
@@ -200,6 +213,7 @@ public class VideoPlayerModel {
     }
 
     public void stopPlayback() {
+        clearSubtitleOverlay();
         subtitleSession.load(null);
         closePlaybackResources();
         currentTimestampUs = 0;
@@ -210,13 +224,20 @@ public class VideoPlayerModel {
     }
 
     public void shutdown() {
+        clearSubtitleOverlay();
         subtitleSession.close();
         closePlaybackResources();
     }
 
-    /** Called by the subtitle button/shortcut in the following UI commit. */
+    /** Apply a toggle immediately, even when paused or while the decoder is ahead. */
     public void setSubtitlesEnabled(boolean enabled) {
         subtitleSession.setEnabled(enabled);
+        reportSubtitleRequestState();
+        if (playbackOpen && clock.isAnchored()) {
+            updateSubtitleOverlay();
+        } else if (!enabled) {
+            clearSubtitleOverlay();
+        }
     }
 
     public boolean areSubtitlesEnabled() {
@@ -301,11 +322,12 @@ public class VideoPlayerModel {
             audioPlayer.open(grabber.getSampleRate(), grabber.getAudioChannels());
         }
 
-        // The subtitle renderer is the final frame effect so its lettering is not
-        // changed by scratches, colour filters or other earlier processors.
-        // It becomes a no-op when subtitles are disabled or still downloading.
+        // Keep subtitle preparation as the final frame processor, but do NOT
+        // permanently paint its lettering into prefetched video frames. The
+        // view composites the caption separately at the displayed timestamp.
+        // This lets S/CC instantly hide old text and reveal newly received text.
         List<FrameProcessor> activeProcessors = new ArrayList<>(frameProcessors);
-        activeProcessors.add(new FrameSubtitleRenderer(subtitleSession::timeline,
+        activeProcessors.add(FrameSubtitleRenderer.forLiveOverlay(subtitleSession::timeline,
                 subtitleSession::isEnabled));
         effectChain = new EffectChain(activeProcessors, new EffectChain.MediaProperties(
                 mediaName(videoFile),
@@ -321,6 +343,9 @@ public class VideoPlayerModel {
     }
 
     private void resetPlaybackClock(long logicalTimestampUs) {
+        // The previously shown image remains until the seek's first new frame.
+        // Do not put new-position subtitles over that old picture.
+        clearSubtitleOverlay();
         if (playbackDiagnostics != null) {
             playbackDiagnostics.reset();
         }
@@ -392,6 +417,12 @@ public class VideoPlayerModel {
         drainDecoder();
         writeDueAudio(now);
         displayDueFrame(now);
+        reportSubtitleRequestState();
+        // Poll the published immutable transcript even while paused, so a late
+        // network response appears without waiting for another decoded frame.
+        if (playbackOpen && clock.isAnchored()) {
+            updateSubtitleOverlay();
+        }
         reportEndOfPlayback();
         if (playbackDiagnostics != null && playbackOpen) {
             playbackDiagnostics.reportIfDue(now, readyFrames.size(), decoder);
@@ -565,6 +596,7 @@ public class VideoPlayerModel {
     }
 
     private void finishPlayback() {
+        clearSubtitleOverlay();
         long endTimestampUs = videoDurationUs != NO_SEEK_REQUEST
                 ? videoDurationUs
                 : currentTimestampUs;
@@ -578,6 +610,7 @@ public class VideoPlayerModel {
     }
 
     private void handlePlaybackError(Exception e) {
+        clearSubtitleOverlay();
         e.printStackTrace();
         closePlaybackResources();
         pauseRequested = false;
@@ -670,6 +703,68 @@ public class VideoPlayerModel {
 
     private void notifyFrameReady(Image image) {
         frameReadyHandler.accept(image);
+    }
+
+    /** Report asynchronous subtitle availability; otherwise failed HTTP requests are invisible. */
+    private void reportSubtitleRequestState() {
+        SubtitlePlaybackSession.RequestState state = subtitleSession.requestState();
+        if (state == lastReportedSubtitleState) {
+            return;
+        }
+        lastReportedSubtitleState = state;
+        if (videoFile == null || !subtitleSession.isEnabled()) {
+            return;
+        }
+
+        switch (state) {
+            case LOADING -> {
+                notifyStatusChanged("Subtitles: extracting / uploading audio...");
+                System.err.println("[subtitles] Preparing original media audio and contacting localhost:8080");
+            }
+            case READY -> {
+                int count = subtitleSession.timeline().cues().size();
+                notifyStatusChanged(count == 0
+                        ? "Subtitles: transcription returned no dialogue"
+                        : "Subtitles: ready (" + count + " phrases)");
+                System.err.println("[subtitles] Response received; " + count + " timed phrases available");
+            }
+            case FAILED -> {
+                String reason = subtitleFailureHint(subtitleSession.lastFailure());
+                notifyStatusChanged("Subtitles unavailable: " + reason);
+                System.err.println("[subtitles] Transcription failed: " + reason);
+            }
+            case IDLE -> { /* No media is currently being transcribed. */ }
+        }
+    }
+
+    /** No response bodies, API keys or transcribed speech are printed to diagnostics. */
+    private static String subtitleFailureHint(Throwable error) {
+        Throwable cause = error;
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof ConnectException) {
+            return "server not reachable on localhost:8080";
+        }
+        if (cause instanceof HttpTimeoutException) {
+            return "server request timed out";
+        }
+        if (cause instanceof IllegalStateException && cause.getMessage() != null
+                && cause.getMessage().matches("Subtitle server returned HTTP \\d+")) {
+            return cause.getMessage() + " (check Assignment 1 logs)";
+        }
+        return cause == null ? "unknown error" : cause.getClass().getSimpleName()
+                + " (check Assignment 1 / audio input)";
+    }
+
+    /** Only publish when text changes; the view then reuses the same overlay image. */
+    private void updateSubtitleOverlay() {
+        subtitleDisplay.update(subtitleSession.isEnabled(), subtitleSession.timeline(), currentTimestampUs)
+                .ifPresent(subtitleChangedHandler);
+    }
+
+    private void clearSubtitleOverlay() {
+        subtitleDisplay.clear().ifPresent(subtitleChangedHandler);
     }
 
     private void notifyStatusChanged(String status) {

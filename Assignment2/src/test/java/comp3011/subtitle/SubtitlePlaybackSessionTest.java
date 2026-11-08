@@ -27,6 +27,41 @@ class SubtitlePlaybackSessionTest {
             List.of());
 
     @Test
+    void reportsRequestLifecycleWithoutConfusingEmptyAndFailedResults() {
+        CompletableFuture<SubtitleTranscript> response = new CompletableFuture<>();
+        try (SubtitlePlaybackSession session = new SubtitlePlaybackSession(path -> response, () -> {})) {
+            assertEquals(SubtitlePlaybackSession.RequestState.IDLE, session.requestState());
+            session.load(Path.of("movie.mp4"));
+            session.setEnabled(true);
+            assertEquals(SubtitlePlaybackSession.RequestState.LOADING, session.requestState());
+            response.complete(new SubtitleTranscript("", 0, List.of(), List.of()));
+            assertEquals(SubtitlePlaybackSession.RequestState.READY, session.requestState());
+            assertTrue(session.timeline().cues().isEmpty());
+            session.load(null);
+            assertEquals(SubtitlePlaybackSession.RequestState.IDLE, session.requestState());
+        }
+    }
+
+    @Test
+    void reportsFailureAndRetryWhenCaptionsAreReenabled() {
+        AtomicInteger requests = new AtomicInteger();
+        try (SubtitlePlaybackSession session = new SubtitlePlaybackSession(path -> {
+            if (requests.getAndIncrement() == 0) {
+                return CompletableFuture.failedFuture(new IOException("server unavailable"));
+            }
+            return CompletableFuture.completedFuture(CAPTIONS);
+        }, () -> {})) {
+            session.load(Path.of("movie.mp4"));
+            session.setEnabled(true);
+            assertEquals(SubtitlePlaybackSession.RequestState.FAILED, session.requestState());
+            session.setEnabled(false);
+            session.setEnabled(true);
+            assertEquals(SubtitlePlaybackSession.RequestState.READY, session.requestState());
+            assertEquals(2, requests.get());
+        }
+    }
+
+    @Test
     void doesNotTranscribeUntilEnabledAndPublishesResultWithoutRestart() {
         AtomicInteger requests = new AtomicInteger();
         CompletableFuture<SubtitleTranscript> server = new CompletableFuture<>();

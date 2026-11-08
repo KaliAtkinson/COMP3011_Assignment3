@@ -20,6 +20,9 @@ import java.util.function.Function;
  * <p>AI Assistance: Developed with advice and code assistance from OpenAI ChatGPT.
  */
 public final class SubtitlePlaybackSession implements AutoCloseable {
+    /** Observable request state, published across the HTTP and JavaFX threads. */
+    public enum RequestState { IDLE, LOADING, READY, FAILED }
+
     private final Function<Path, CompletableFuture<SubtitleTranscript>> request;
     private final AutoCloseable resource;
     private final Object lock = new Object();
@@ -32,6 +35,7 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
     private boolean ready;
     private boolean closed;
     private volatile Throwable lastFailure;
+    private volatile RequestState requestState = RequestState.IDLE;
 
     public SubtitlePlaybackSession() {
         this(new SubtitleTranscriptionCoordinator());
@@ -63,6 +67,7 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
             timeline = SubtitleTimeline.empty();
             ready = false;
             lastFailure = null;
+            requestState = RequestState.IDLE;
             startIfNeeded();
         }
     }
@@ -94,17 +99,25 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
         return lastFailure;
     }
 
+    /** Distinguishes an in-progress request, an empty result and an actual failure. */
+    public RequestState requestState() {
+        return requestState;
+    }
+
     // Must be called under lock. Never blocks: expensive extraction starts elsewhere.
     private void startIfNeeded() {
         if (!enabled || media == null || pending != null || ready || closed) {
             return;
         }
         long requestedGeneration = generation;
+        requestState = RequestState.LOADING;
+        lastFailure = null;
         CompletableFuture<SubtitleTranscript> future;
         try {
             future = Objects.requireNonNull(request.apply(media), "transcription future");
         } catch (RuntimeException failure) {
             lastFailure = failure;
+            requestState = RequestState.FAILED;
             return;
         }
         pending = future;
@@ -116,14 +129,17 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
                 pending = null;
                 if (failure != null) {
                     lastFailure = failure;
+                    requestState = RequestState.FAILED;
                     return;
                 }
                 try {
                     timeline = SubtitleTimeline.fromTranscript(transcript);
                     lastFailure = null;
                     ready = true;
+                    requestState = RequestState.READY;
                 } catch (RuntimeException invalidResponse) {
                     lastFailure = invalidResponse;
+                    requestState = RequestState.FAILED;
                 }
             }
         });
@@ -140,6 +156,7 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
             enabled = false;
             media = null;
             timeline = SubtitleTimeline.empty();
+            requestState = RequestState.IDLE;
             if (pending != null) {
                 pending.cancel(false);
                 pending = null;
