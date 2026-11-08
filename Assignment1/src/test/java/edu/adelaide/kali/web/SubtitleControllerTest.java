@@ -2,6 +2,7 @@ package edu.adelaide.kali.web;
 
 import edu.adelaide.kali.dto.SubtitleResponse;
 import edu.adelaide.kali.service.SubtitleService;
+import edu.adelaide.kali.exception.TranscriptionException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -47,6 +48,17 @@ class SubtitleControllerTest {
                 .andExpect(jsonPath("$.duration").value(2.0))
                 .andExpect(jsonPath("$.segments[0].start").value(0.0))
                 .andExpect(jsonPath("$.words[0].word").value("Hello"));
+    }
+
+    @Test
+    void respondsWithSafeBadGatewayWhenWhisperFails() throws Exception {
+        when(subtitleService.transcribe(any()))
+                .thenThrow(new TranscriptionException("hidden-provider-error-body"));
+        var audio = new MockMultipartFile("audio", "speech.wav", "audio/wav", new byte[]{1});
+        mockMvc.perform(multipart("/api/v1/subtitles").file(audio))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.message")
+                        .value("Transcription service unavailable. See server logs for details."));
     }
 
     @Test

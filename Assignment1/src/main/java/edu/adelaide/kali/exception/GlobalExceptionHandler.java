@@ -34,6 +34,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
+    /**
+     * Report upstream transcription problems without forwarding provider error bodies
+     * or details that could contain secrets. The server logs safe HTTP status details.
+     */
+    @ExceptionHandler(TranscriptionException.class)
+    public ResponseEntity<ErrorResponse> handleTranscriptionFailure(
+            TranscriptionException ex, HttpServletRequest request) {
+        logger.warn("Transcription unavailable on {}", request.getRequestURI());
+        ErrorResponse body = new ErrorResponse(
+            MILLIS_FORMAT.format(Instant.now()),
+            HttpStatus.BAD_GATEWAY.value(),
+            "Bad Gateway",
+            "Transcription service unavailable. See server logs for details.",
+            request.getRequestURI()
+        );
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(body);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneric(
             Exception ex, HttpServletRequest request) {

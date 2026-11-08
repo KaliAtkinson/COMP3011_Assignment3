@@ -5,6 +5,8 @@ import edu.adelaide.kali.config.OpenAiProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
+import edu.adelaide.kali.exception.TranscriptionException;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -12,10 +14,13 @@ import org.springframework.web.client.RestClient;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 
 /*
  * AI Assistance:
@@ -62,4 +67,48 @@ class WhisperSubtitleServiceRequestTest {
         assertEquals(3.0, tracker.getSeconds());
         server.verify();
     }
+
+    @Test
+    void rejectsMissingApiKeyBeforeAnyNetworkCall() {
+        var tracker = new AudioUsageTracker();
+        var service = new WhisperSubtitleService(RestClient.create(),
+                new OpenAiProperties("https://api.openai.com/v1/audio/transcriptions", "unused", ""), tracker);
+        var file = new MockMultipartFile("audio", "speech.wav", "audio/wav", new byte[] {1});
+
+        var error = assertThrows(TranscriptionException.class, () -> service.transcribe(file));
+        assertTrue(error.getMessage().contains("API key"));
+        assertEquals(0.0, tracker.getSeconds());
+    }
+
+    @Test
+    void reportsUpstreamAuthenticationFailureWithoutLeakingProviderBody() {
+        assertSafeUpstreamFailure(HttpStatus.UNAUTHORIZED, "HTTP 401");
+    }
+
+    @Test
+    void reportsRateLimitWithoutChargingUsageOrLeakingProviderBody() {
+        assertSafeUpstreamFailure(HttpStatus.TOO_MANY_REQUESTS, "HTTP 429");
+    }
+
+    private void assertSafeUpstreamFailure(HttpStatus httpStatus, String expectedStatus) {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var tracker = new AudioUsageTracker();
+        var service = new WhisperSubtitleService(builder.build(),
+                new OpenAiProperties("https://api.openai.com/v1/audio/transcriptions", "unused", "test-key"),
+                tracker);
+        server.expect(requestTo("https://api.openai.com/v1/audio/transcriptions"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(httpStatus).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":\"secret-from-provider\"}"));
+
+        var file = new MockMultipartFile("audio", "speech.wav", "audio/wav", new byte[] {1, 2});
+        var error = assertThrows(TranscriptionException.class, () -> service.transcribe(file));
+        assertTrue(error.getMessage().contains(expectedStatus));
+        assertFalse(error.getMessage().contains("secret-from-provider"));
+        assertFalse(error.getMessage().contains("test-key"));
+        assertEquals(0.0, tracker.getSeconds());
+        server.verify();
+    }
+
 }
