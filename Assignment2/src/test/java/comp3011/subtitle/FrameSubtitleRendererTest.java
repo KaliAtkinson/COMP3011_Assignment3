@@ -8,6 +8,7 @@
 package comp3011.subtitle;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -93,6 +94,40 @@ class FrameSubtitleRendererTest {
         Frame turnedOff = frame(100);
         renderer.process(turnedOff, new InfoFrame(3, 1_500_000));
         assertArrayEquals(original, pixels(turnedOff));
+    }
+
+    @Test
+    void liveOverlayProcessorNeverBurnsCaptionsIntoPrefetchedFrames() throws Exception {
+        SubtitleTimeline timeline = SubtitleTimeline.fromTranscript(new SubtitleTranscript("Hello world", 10,
+                List.of(new SubtitleTranscript.Segment(1, 3, "Hello world", 0, 0)), List.of()));
+        FrameSubtitleRenderer renderer = FrameSubtitleRenderer.forLiveOverlay(() -> timeline, () -> true);
+        renderer.initialise(new InfoVideo("test.mp4", 240, WIDTH, HEIGHT, Frame.DEPTH_UBYTE, 3,
+                WIDTH * 3, 24, 24, 41667, 0));
+        Frame video = frame(90);
+        byte[] original = pixels(video);
+        renderer.process(video, new InfoFrame(7, 1_500_000));
+        assertArrayEquals(original, pixels(video),
+                "Captions cannot be irreversibly embedded in frames ahead of playback");
+    }
+
+    @Test
+    void overlayHasTransparentBackgroundAndVisibleWhiteAndBlackGlyphs() {
+        FrameSubtitleRenderer renderer = new FrameSubtitleRenderer(SubtitleTimeline.empty());
+        int[] argb = renderer.overlayArgb("Hello world", WIDTH, HEIGHT);
+        assertEquals(WIDTH * HEIGHT, argb.length);
+        assertEquals(0, argb[0], "The video itself must remain unobscured");
+        assertEquals(0, argb[(HEIGHT / 2) * WIDTH + WIDTH / 2]);
+        boolean white = false;
+        boolean black = false;
+        for (int pixel : argb) {
+            if ((pixel >>> 24) > 220) {
+                white |= (pixel & 0xffffff) == 0xffffff;
+                black |= (pixel & 0xffffff) == 0;
+            }
+        }
+        assertTrue(white, "Caption text should be white");
+        assertTrue(black, "Caption outline should be black");
+        assertArrayEquals(new int[WIDTH * HEIGHT], renderer.overlayArgb("", WIDTH, HEIGHT));
     }
 
     @Test

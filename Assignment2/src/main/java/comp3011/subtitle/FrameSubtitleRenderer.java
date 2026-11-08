@@ -21,36 +21,51 @@ import java.util.function.Supplier;
 import org.bytedeco.javacv.Frame;
 
 /**
- * Paints subtitle text directly onto a video frame using the frame timestamp.
+ * Renders white, black-outlined captions using a frame's media timestamp.
  *
- * <p>Text is rendered into a transparent Java2D bitmap (white sans-serif text,
- * black outline) then alpha-blended into the BGR frame. Java2D runs on the
- * caller's frame-processing worker, not on the JavaFX application thread.
- * The cached bitmap is immutable after construction and can be read safely by
- * concurrent effect workers. A single-entry cache avoids accumulating a
- * bitmap for every phrase of a long movie.
+ * <p>In standalone frame-processing mode, the immutable Java2D caption bitmap
+ * is alpha-blended directly into the decoded BGR pixels. In live overlay mode,
+ * the final frame processor prepares glyphs without altering prefetched video.
+ * The JavaFX view uses {@link #overlayArgb(String, int, int)} to display them
+ * over the current frame, which permits immediate toggles and late transcripts.
  *
- * <p>The live player supplies an enabled flag and a replacement timeline when
- * cloud transcription completes. Already-decoded frames have been processed
- * using the old state; the GUI must handle immediate hide/show for those frames
- * when the toggle is connected.
+ * <p>The single-entry bitmap cache is safely published through a volatile
+ * reference, and independent decoder workers can access it concurrently.
+ * Rendering the overlay pixels is necessary only when the displayed phrase
+ * changes; the normal video-presentation path remains unchanged.
  *
  * <p>AI Assistance: Developed with advice and code assistance from OpenAI ChatGPT.
  */
 public final class FrameSubtitleRenderer extends FrameProcessor {
     private final Supplier<SubtitleTimeline> timeline;
     private final BooleanSupplier enabled;
+    private final boolean overlayOnly;
     private volatile CaptionBitmap cachedCaption;
 
     /** Fixed timeline, useful for tests and independent frame-processing. */
     public FrameSubtitleRenderer(SubtitleTimeline timeline) {
-        this(() -> Objects.requireNonNull(timeline, "timeline"), () -> true);
+        this(() -> Objects.requireNonNull(timeline, "timeline"), () -> true, false);
     }
 
     /** Live timeline and enabled flag, safely read by decoder effect workers. */
     public FrameSubtitleRenderer(Supplier<SubtitleTimeline> timeline, BooleanSupplier enabled) {
+        this(timeline, enabled, false);
+    }
+
+    private FrameSubtitleRenderer(Supplier<SubtitleTimeline> timeline, BooleanSupplier enabled,
+                                  boolean overlayOnly) {
         this.timeline = Objects.requireNonNull(timeline, "timeline");
         this.enabled = Objects.requireNonNull(enabled, "enabled");
+        this.overlayOnly = overlayOnly;
+    }
+
+    /**
+     * The live decoder still processes subtitles as its final frame processor,
+     * but does not burn them into video frames waiting in the decoder queue.
+     */
+    public static FrameSubtitleRenderer forLiveOverlay(Supplier<SubtitleTimeline> timeline,
+                                                        BooleanSupplier enabled) {
+        return new FrameSubtitleRenderer(timeline, enabled, true);
     }
 
     @Override
@@ -76,15 +91,48 @@ public final class FrameSubtitleRenderer extends FrameProcessor {
             throw new IllegalArgumentException("Subtitles require 8-bit, 3- or 4-channel byte-backed frames");
         }
         String text = cue.orElseThrow().text();
+        CaptionBitmap bitmap = bitmapFor(text, frame.imageWidth, frame.imageHeight,
+                frame.imageChannels, frame.imageStride);
+        if (!overlayOnly) {
+            blend(bitmap, pixels);
+        }
+    }
+
+    /**
+     * Creates a transparent ARGB caption image at the video's native resolution.
+     * The view calls this only when the displayed text changes; subsequent frames
+     * reuse the resulting JavaFX image without re-rasterising the glyphs.
+     *
+     * <p>This method does not modify video pixels. It is safe to use alongside
+     * worker calls to process(), since published bitmaps are immutable.
+     */
+    public int[] overlayArgb(String text, int width, int height) {
+        Objects.requireNonNull(text, "text");
+        if (width <= 0 || height <= 0 || width > Integer.MAX_VALUE / 4
+                || (long) width * height > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Invalid subtitle image dimensions");
+        }
+        int[] argb = new int[width * height];
+        if (text.isBlank()) {
+            return argb;
+        }
+        CaptionBitmap bitmap = bitmapFor(text, width, height, 4, width * 4);
+        for (int i = 0; i < bitmap.colors.length; i++) {
+            argb[bitmap.byteOffsets[i] / 4] = bitmap.colors[i];
+        }
+        return argb;
+    }
+
+    private CaptionBitmap bitmapFor(String text, int width, int height,
+                                    int channels, int stride) {
         CaptionBitmap bitmap = cachedCaption;
-        if (bitmap == null || bitmap.width != frame.imageWidth
-                || bitmap.height != frame.imageHeight || bitmap.channels != frame.imageChannels
-                || bitmap.stride != frame.imageStride || !bitmap.text.equals(text)) {
-            bitmap = renderCaption(text, frame.imageWidth, frame.imageHeight,
-                    frame.imageChannels, frame.imageStride);
+        if (bitmap == null || bitmap.width != width || bitmap.height != height
+                || bitmap.channels != channels || bitmap.stride != stride
+                || !bitmap.text.equals(text)) {
+            bitmap = renderCaption(text, width, height, channels, stride);
             cachedCaption = bitmap;
         }
-        blend(bitmap, pixels);
+        return bitmap;
     }
 
     private static CaptionBitmap renderCaption(String text, int width, int height,
