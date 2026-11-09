@@ -122,6 +122,7 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
         }
         pending = future;
         future.whenComplete((transcript, failure) -> {
+            SubtitleTimeline successfulTimeline;
             synchronized (lock) {
                 if (closed || generation != requestedGeneration) {
                     return;
@@ -133,15 +134,19 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
                     return;
                 }
                 try {
-                    timeline = SubtitleTimeline.fromTranscript(transcript);
+                    successfulTimeline = SubtitleTimeline.fromTranscript(transcript);
+                    timeline = successfulTimeline;
                     lastFailure = null;
                     ready = true;
                     requestState = RequestState.READY;
                 } catch (RuntimeException invalidResponse) {
                     lastFailure = invalidResponse;
                     requestState = RequestState.FAILED;
+                    return;
                 }
             }
+            // Diagnostic I/O is opt-in and never runs while holding the session lock.
+            SubtitleSrtExporter.exportIfRequested(transcript, successfulTimeline);
         });
     }
 
