@@ -15,19 +15,17 @@ import java.util.Optional;
  * forwards seeks need no special synchronisation and may be queried safely
  * from different threads.
  *
- * <p>For a first pass, each Whisper segment becomes one phrase. Short segments
- * are displayed for at least one second where there is room, and long segments
- * for at most seven seconds. An incoming phrase takes priority over the prior
- * phrase, which is clipped at the new start to prevent overlapping captions.
- * Word-level splitting and two-line text layout are separate rendering work.
+ * <p>Whisper word timestamps are used to split long segments into readable
+ * phrases at pauses and punctuation, with a segment-level fallback when word
+ * data is absent. Phrases are displayed for at least one second where there
+ * is room, and at most seven seconds. Incoming phrases take priority and clip
+ * previous ones to prevent overlap.
  *
  * <p>AI Assistance: Developed with advice and code assistance from OpenAI ChatGPT.
  */
 public final class SubtitleTimeline {
     private static final double MIN_DISPLAY_SECONDS = 1.0;
     private static final double MAX_DISPLAY_SECONDS = 7.0;
-    private static final double NO_SPEECH_THRESHOLD = 0.6;
-    private static final double LOW_LOG_PROB_THRESHOLD = -1.0;
 
     private final List<Cue> cues;
 
@@ -47,23 +45,18 @@ public final class SubtitleTimeline {
     public static SubtitleTimeline fromTranscript(SubtitleTranscript transcript) {
         Objects.requireNonNull(transcript, "transcript");
 
-        List<Cue> phrases = new ArrayList<>();
-        for (SubtitleTranscript.Segment segment : transcript.segments()) {
-            // The server already applies the Whisper silence filter. Keep the
-            // same safety rule here in case a different server sends raw data.
-            if (segment.noSpeechProb() > NO_SPEECH_THRESHOLD
-                    && segment.avgLogProb() < LOW_LOG_PROB_THRESHOLD) {
-                continue;
-            }
-            String caption = segment.text().replaceAll("\\s+", " ").trim();
-            if (caption.isEmpty()) {
-                continue;
-            }
-            double start = segment.start();
-            double end = Math.min(Math.max(segment.end(), start + MIN_DISPLAY_SECONDS),
-                    start + MAX_DISPLAY_SECONDS);
-            phrases.add(new Cue(start, end, caption));
+        // Prefer Whisper's per-word times when present. This avoids showing
+        // a whole long segment before its later words are spoken, and prevents
+        // the two-line formatter from silently losing the rest of the dialogue.
+        // A segment without usable word timestamps keeps its old fallback.
+        List<Cue> phrases = SubtitleWordCues.build(transcript);
+        List<Cue> held = new ArrayList<>(phrases.size());
+        for (Cue phrase : phrases) {
+            double end = Math.min(Math.max(phrase.end(), phrase.start() + MIN_DISPLAY_SECONDS),
+                    phrase.start() + MAX_DISPLAY_SECONDS);
+            held.add(new Cue(phrase.start(), end, phrase.text()));
         }
+        phrases = held;
 
         // Timings from a cloud service need not arrive in playback order.
         // List.sort is stable: if two phrases share a start, the later server
