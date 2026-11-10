@@ -26,6 +26,9 @@ import java.util.Optional;
 public final class SubtitleTimeline {
     private static final double MIN_DISPLAY_SECONDS = 1.0;
     private static final double MAX_DISPLAY_SECONDS = 7.0;
+    // Only join almost-contiguous cues that BOTH occupy under one second.
+    // Keep longer phrases and deliberate speech pauses at their own timestamps.
+    private static final double MAX_MERGE_GAP_SECONDS = 0.15;
 
     private final List<Cue> cues;
 
@@ -49,7 +52,7 @@ public final class SubtitleTimeline {
         // a whole long segment before its later words are spoken, and prevents
         // the two-line formatter from silently losing the rest of the dialogue.
         // A segment without usable word timestamps keeps its old fallback.
-        List<Cue> phrases = SubtitleWordCues.build(transcript);
+        List<Cue> phrases = mergeFlashingCues(SubtitleWordCues.build(transcript));
         List<Cue> held = new ArrayList<>(phrases.size());
         for (Cue phrase : phrases) {
             double end = Math.min(Math.max(phrase.end(), phrase.start() + MIN_DISPLAY_SECONDS),
@@ -83,6 +86,42 @@ public final class SubtitleTimeline {
             scheduled.add(new Cue(current.start(), end, current.text()));
         }
         return new SubtitleTimeline(scheduled);
+    }
+
+    /**
+     * Very short, consecutive cues (common with stutters and repeated words)
+     * otherwise flash too fast to read. Join only neighbouring sub-second
+     * phrases, never across a meaningful pause, and never across a finished
+     * sentence ending in a period or question mark. Do not move cue starts or
+     * invent timings: the merged interval spans the same spoken words.
+     */
+    private static List<Cue> mergeFlashingCues(List<Cue> phrases) {
+        List<Cue> ordered = new ArrayList<>(phrases);
+        ordered.sort(Comparator.comparingDouble(Cue::start));
+        List<Cue> result = new ArrayList<>(ordered.size());
+        for (Cue next : ordered) {
+            if (result.isEmpty()) {
+                result.add(next);
+                continue;
+            }
+            Cue previous = result.getLast();
+            String combined = previous.text() + " " + next.text();
+            double gap = next.start() - previous.end();
+            boolean bothTooBrief = previous.end() - previous.start() < MIN_DISPLAY_SECONDS
+                    && next.end() - next.start() < MIN_DISPLAY_SECONDS;
+            boolean joinsDifferentSentence = previous.text().endsWith(".")
+                    || previous.text().endsWith("?");
+            if (bothTooBrief && !joinsDifferentSentence
+                    && gap >= -0.001 && gap <= MAX_MERGE_GAP_SECONDS
+                    && next.end() - previous.start() <= MAX_DISPLAY_SECONDS
+                    && SubtitleWordCues.fitsTwoLines(combined)) {
+                result.set(result.size() - 1,
+                        new Cue(previous.start(), next.end(), combined));
+            } else {
+                result.add(next);
+            }
+        }
+        return result;
     }
 
     /**

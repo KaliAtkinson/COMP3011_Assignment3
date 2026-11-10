@@ -98,6 +98,41 @@ class SubtitleWordCuesTest {
         assertEquals("Stop, now!", timeline.cues().getFirst().text());
     }
 
+    @Test
+    void restoresCommasAndSentencePunctuationFromMatchingSegmentWords() {
+        SubtitleTimeline timeline = from(
+                List.of(segment(0.0, 3.0, "the Red, Red, Red, and the Ducky.")),
+                List.of(word(0.0, 0.3, "the"), word(0.3, 0.6, "Red"),
+                        word(0.6, 0.9, "Red"), word(0.9, 1.2, "Red"),
+                        word(1.2, 1.5, "and"), word(1.5, 1.8, "the"),
+                        word(1.8, 2.1, "Ducky")));
+        assertEquals("the Red, Red, Red, and the Ducky.",
+                timeline.cues().getFirst().text());
+    }
+
+    @Test
+    void rejoinsHyphenatedWordsWithoutIntroducingSpaces() {
+        SubtitleTimeline timeline = from(
+                List.of(segment(0.0, 3.0, "A-A-A-A-And look, the X-D!")),
+                List.of(word(0.0, 0.18, "A"), word(0.18, 0.36, "A"),
+                        word(0.36, 0.54, "A"), word(0.54, 0.72, "A"),
+                        word(0.72, 0.95, "And"), word(1.0, 1.3, "look"),
+                        word(1.3, 1.5, "the"), word(1.5, 1.7, "X"),
+                        word(1.7, 2.0, "D")));
+        assertEquals("A-A-A-A-And look, the X-D!",
+                timeline.cues().stream().map(SubtitleTimeline.Cue::text)
+                        .collect(Collectors.joining(" ")));
+    }
+
+    @Test
+    void mismatchedSegmentNeverInjectsUnverifiedPunctuationOrWords() {
+        SubtitleTimeline timeline = from(
+                List.of(segment(0.0, 3.0, "This, is not the same!")),
+                List.of(word(0.0, 0.3, "These"), word(0.4, 0.7, "are"),
+                        word(0.8, 1.2, "different")));
+        assertEquals("These are different", timeline.cues().getFirst().text());
+    }
+
     private static SubtitleTimeline from(List<SubtitleTranscript.Segment> segments,
                                          List<SubtitleTranscript.Word> words) {
         return SubtitleTimeline.fromTranscript(new SubtitleTranscript("", 100.0, segments, words));

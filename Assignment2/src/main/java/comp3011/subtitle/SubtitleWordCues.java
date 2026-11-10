@@ -3,6 +3,9 @@ package comp3011.subtitle;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Builds readable, word-timed subtitle phrases from Whisper's word timestamps.
@@ -23,6 +26,13 @@ final class SubtitleWordCues {
     private static final double MAX_PHRASE_SECONDS = 6.5;
     private static final double WORD_BOUNDARY_TOLERANCE_SECONDS = 0.1;
     private static final int MAX_LINE_CHARS = SubtitleCaptionFormatter.MAX_CHARACTERS_PER_LINE;
+    // Split contractions as one lexical word, but allow hyphenated words to align
+    // with Whisper's separate word tokens (e.g. X-D versus X / D).
+    private static final Pattern LEXICAL_WORD = Pattern.compile(
+            "[\\p{L}\\p{N}]+(?:['’][\\p{L}\\p{N}]+)*");
+
+    private record TimedToken(double start, double end, String text, boolean spaced) { }
+    private record TextWord(int start, int end, String value) { }
 
     private SubtitleWordCues() { }
 
@@ -67,20 +77,92 @@ final class SubtitleWordCues {
             if (belonging.isEmpty()) {
                 result.add(cue(segment.start(), segment.end(), fallback));
             } else {
-                split(belonging, result);
+                split(punctuatedWords(segment.text(), belonging), result);
             }
         }
         return result;
     }
 
-    private static void split(List<SubtitleTranscript.Word> words,
+    /**
+     * Recover punctuation only when the segment and its timed words agree on
+     * their lexical sequence. Otherwise trust the word-level data unchanged;
+     * guessing punctuation from a mismatched transcript risks corrupting it.
+     */
+    private static List<TimedToken> punctuatedWords(String segmentText,
+                                                    List<SubtitleTranscript.Word> words) {
+        List<TextWord> sourceWords = lexicalWords(segmentText);
+        List<List<TextWord>> wordTokens = new ArrayList<>(words.size());
+        int count = 0;
+        for (SubtitleTranscript.Word word : words) {
+            List<TextWord> tokens = lexicalWords(word.word());
+            if (tokens.isEmpty()) { // Whisper occasionally returns standalone punctuation.
+                return unformattedWords(words);
+            }
+            count += tokens.size();
+            wordTokens.add(tokens);
+        }
+        if (count != sourceWords.size()) {
+            return unformattedWords(words);
+        }
+        int position = 0;
+        for (List<TextWord> tokens : wordTokens) {
+            for (TextWord token : tokens) {
+                if (!canonical(token.value()).equals(canonical(sourceWords.get(position++).value()))) {
+                    return unformattedWords(words);
+                }
+            }
+        }
+
+        List<TimedToken> restored = new ArrayList<>(words.size());
+        int offset = 0;
+        for (int i = 0; i < words.size(); i++) {
+            int first = offset;
+            offset += wordTokens.get(i).size();
+            int start = i == 0 ? 0 : sourceWords.get(first).start();
+            int end = offset == sourceWords.size()
+                    ? segmentText.length() : sourceWords.get(offset).start();
+            String original = clean(segmentText.substring(start, end));
+            // When the source joins words with a hyphen, do not add a space.
+            boolean spaced = i != 0 && segmentText.substring(
+                    sourceWords.get(first - 1).end(), sourceWords.get(first).start())
+                    .codePoints().anyMatch(Character::isWhitespace);
+            SubtitleTranscript.Word word = words.get(i);
+            restored.add(new TimedToken(word.start(), word.end(), original, spaced));
+        }
+        return restored;
+    }
+
+    private static List<TextWord> lexicalWords(String text) {
+        List<TextWord> result = new ArrayList<>();
+        Matcher matcher = LEXICAL_WORD.matcher(text);
+        while (matcher.find()) {
+            result.add(new TextWord(matcher.start(), matcher.end(), matcher.group()));
+        }
+        return result;
+    }
+
+    private static String canonical(String text) {
+        return text.replace('’', '\'').toLowerCase(Locale.ROOT);
+    }
+
+    private static List<TimedToken> unformattedWords(List<SubtitleTranscript.Word> words) {
+        List<TimedToken> result = new ArrayList<>(words.size());
+        for (SubtitleTranscript.Word word : words) {
+            String token = clean(word.word());
+            result.add(new TimedToken(word.start(), word.end(), token,
+                    !token.matches("^[,.;:!?%\\)\\]]+$")));
+        }
+        return result;
+    }
+
+    private static void split(List<TimedToken> words,
                               List<SubtitleTimeline.Cue> result) {
         StringBuilder caption = new StringBuilder();
         double start = 0.0;
         double end = 0.0;
 
-        for (SubtitleTranscript.Word word : words) {
-            String token = clean(word.word());
+        for (TimedToken word : words) {
+            String token = word.text();
             if (token.isEmpty()) {
                 continue;
             }
@@ -91,14 +173,16 @@ final class SubtitleWordCues {
                 continue;
             }
 
-            String combined = append(caption.toString(), token);
+            String combined = append(caption.toString(), token, word.spaced());
             boolean pause = word.start() - end >= PAUSE_SECONDS;
             boolean completeSentence = endsSentence(caption)
                     && end - start >= 0.8;
             boolean tooLong = !fitsTwoLines(combined);
             boolean tooSlow = word.end() - start > MAX_PHRASE_SECONDS;
 
-            if (pause || completeSentence || tooLong || tooSlow) {
+            // A source hyphen can tie several timed tokens into one visible word.
+            // Avoid splitting halfway through such a word.
+            if (word.spaced() && (pause || completeSentence || tooLong || tooSlow)) {
                 result.add(cue(start, end, caption.toString()));
                 caption.setLength(0);
                 caption.append(token);
@@ -125,10 +209,8 @@ final class SubtitleWordCues {
         return text == null ? "" : text.replaceAll("\\s+", " ").trim();
     }
 
-    private static String append(String existing, String token) {
-        // Whisper may return punctuation as a separate word token.
-        return token.matches("^[,.;:!?%\\)\\]]+$")
-                ? existing + token : existing + " " + token;
+    private static String append(String existing, String token, boolean spaced) {
+        return existing + (spaced ? " " : "") + token;
     }
 
     private static boolean endsSentence(CharSequence text) {
@@ -136,7 +218,7 @@ final class SubtitleWordCues {
     }
 
     /** Exact whitespace-wrapability check, not merely a total length <= 84. */
-    private static boolean fitsTwoLines(String text) {
+    static boolean fitsTwoLines(String text) {
         if (text.length() <= MAX_LINE_CHARS) {
             return true;
         }

@@ -145,6 +145,42 @@ class SubtitleTimelineTest {
         assertTrue(timeline.atSeconds(6.0).isEmpty());
     }
 
+    @Test
+    void mergesContiguousFlashCuesButPreservesAllTheirWordsAndOriginalStart() {
+        SubtitleTimeline timeline = timeline(
+                segment(2.0, 2.24, "War"),
+                segment(2.24, 2.26, "War!"),
+                segment(2.26, 3.15, "It's a war."));
+        assertEquals(1, timeline.cues().size());
+        assertEquals("War War! It's a war.", timeline.cues().getFirst().text());
+        assertEquals(2.0, timeline.cues().getFirst().start(), 1e-9);
+        assertEquals(3.15, timeline.cues().getFirst().end(), 1e-9);
+    }
+
+    @Test
+    void neverMergesBriefQuestionWithAnswerOrAcrossSpeechPause() {
+        SubtitleTimeline timeline = timeline(
+                segment(0.0, 0.3, "What?"),
+                segment(0.3, 1.1, "I don't know."),
+                segment(1.5, 1.7, "Next"),
+                segment(1.95, 2.15, "phrase"));
+        assertEquals(4, timeline.cues().size());
+        assertEquals("What?", timeline.cues().getFirst().text());
+        assertEquals("I don't know.", timeline.cues().get(1).text());
+        assertEquals("Next", timeline.cues().get(2).text());
+        assertEquals("phrase", timeline.cues().get(3).text());
+    }
+
+    @Test
+    void doesNotMergeShortCaptionIntoLongFutureDialogue() {
+        SubtitleTimeline timeline = timeline(
+                segment(0.0, 0.25, "Oh yeah!"),
+                segment(0.25, 4.5, "The future is a much longer statement."));
+        assertEquals(2, timeline.cues().size());
+        assertEquals("Oh yeah!", timeline.cues().getFirst().text());
+        assertEquals(0.25, timeline.cues().getFirst().end(), 1e-9);
+    }
+
     private static SubtitleTimeline timeline(SubtitleTranscript.Segment... segments) {
         return SubtitleTimeline.fromTranscript(new SubtitleTranscript(
                 "", 40.0, List.of(segments), List.of()));
