@@ -16,6 +16,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.ShortBuffer;
 import java.util.stream.Stream;
 
 import javax.sound.sampled.AudioFileFormat;
@@ -23,7 +24,9 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 
+import org.bytedeco.javacv.FFmpegFrameRecorder;
 import org.junit.jupiter.api.Test;
+import static org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_ID_AAC;
 import org.junit.jupiter.api.io.TempDir;
 
 class SubtitleAudioExtractorTest {
@@ -50,10 +53,29 @@ class SubtitleAudioExtractorTest {
             // Half a second of audio survives resampling, and is not silent or empty.
             assertTrue(samples.length >= 14_000 && samples.length <= 18_000);
             assertTrue(containsNonzero(samples));
+            assertToneSurvives(samples, 440, 12_000, 16_000);
         } finally {
             Files.deleteIfExists(result);
         }
         assertEquals(originalSize, Files.size(original), "Extraction must not alter the original media");
+    }
+
+    @Test
+    void preservesRecognisableSamplesFromAacAudio() throws Exception {
+        // The supplied trailer uses AAC, unlike the original PCM-only smoke test.
+        // A valid WAV header and nonzero amplitude alone cannot detect loud corruption.
+        Path compressed = directory.resolve("source.m4a");
+        writeAacStereoAudio(compressed);
+
+        Path output = new SubtitleAudioExtractor(directory).extract(compressed);
+        try (AudioInputStream audio = AudioSystem.getAudioInputStream(output.toFile())) {
+            AudioFormat format = audio.getFormat();
+            assertEquals(16_000, format.getSampleRate(), 1.0);
+            assertEquals(1, format.getChannels());
+            assertToneSurvives(audio.readAllBytes(), 440, 12_000, 16_000);
+        } finally {
+            Files.deleteIfExists(output);
+        }
     }
 
     @Test
@@ -101,6 +123,57 @@ class SubtitleAudioExtractorTest {
             }
         }
         return false;
+    }
+
+    /**
+     * Measures the actual frequency content, not merely whether there are nonzero bytes.
+     * A distorted or byte-swapped recording typically fails the tone-purity test.
+     */
+    private static void assertToneSurvives(byte[] pcm, int frequency, int originalAmplitude, int rate) {
+        int frames = pcm.length / 2;
+        assertTrue(frames > rate / 4, "Expected a meaningful audio recording");
+
+        // Skip conversion startup; use a stable window of the decoded signal.
+        int begin = rate / 10;
+        int end = Math.min(frames, begin + rate / 5);
+        double sin = 0;
+        double cos = 0;
+        double squares = 0;
+        for (int frame = begin; frame < end; frame++) {
+            int offset = frame * 2;
+            int sample = (short) ((pcm[offset] & 0xff) | ((pcm[offset + 1] & 0xff) << 8));
+            double phase = 2.0 * Math.PI * frequency * frame / rate;
+            sin += sample * Math.sin(phase);
+            cos += sample * Math.cos(phase);
+            squares += (double) sample * sample;
+        }
+        int n = end - begin;
+        double measuredAmplitude = 2.0 * Math.hypot(sin, cos) / n;
+        double toneEnergyFraction = (measuredAmplitude * measuredAmplitude / 2.0) / (squares / n);
+        assertTrue(measuredAmplitude > originalAmplitude * 0.65
+                        && measuredAmplitude < originalAmplitude * 1.30,
+                "Extracted audio has incorrect amplitude: " + measuredAmplitude);
+        assertTrue(toneEnergyFraction > 0.85,
+                "Extracted audio is distorted: 440 Hz tone explains only " + toneEnergyFraction + " of energy");
+    }
+
+    private static void writeAacStereoAudio(Path output) throws Exception {
+        int rate = 44_100;
+        short[] interleaved = new short[rate * 2];
+        for (int frame = 0; frame < rate; frame++) {
+            short value = (short) Math.round(Math.sin(2 * Math.PI * 440 * frame / rate) * 12_000);
+            interleaved[frame * 2] = value;
+            interleaved[frame * 2 + 1] = value;
+        }
+        try (FFmpegFrameRecorder recorder = new FFmpegFrameRecorder(output.toFile(), 2)) {
+            recorder.setFormat("ipod");
+            recorder.setAudioCodec(AV_CODEC_ID_AAC);
+            recorder.setSampleRate(rate);
+            recorder.setAudioChannels(2);
+            recorder.setAudioBitrate(128_000);
+            recorder.start();
+            recorder.recordSamples(rate, 2, ShortBuffer.wrap(interleaved));
+        }
     }
 
     private static void writeStereoPcmAudio(Path output) throws Exception {
