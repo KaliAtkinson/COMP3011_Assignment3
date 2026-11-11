@@ -79,6 +79,24 @@ class SubtitleAudioExtractorTest {
     }
 
     @Test
+    void previewExtractionStopsAtRequestedSecondWithoutChangingFirstSamples() throws Exception {
+        Path original = directory.resolve("three-seconds.wav");
+        writeStereoPcmAudio(original, 3.0);
+        SubtitleAudioExtractor extractor = new SubtitleAudioExtractor(directory);
+        Path preview = extractor.extractFirstSeconds(original, 1);
+        try (AudioInputStream audio = AudioSystem.getAudioInputStream(preview.toFile())) {
+            assertEquals(16_000, audio.getFormat().getSampleRate(), 1.0);
+            assertEquals(1, audio.getFormat().getChannels());
+            byte[] pcm = audio.readAllBytes();
+            assertEquals(16_000 * 2, pcm.length);
+            assertToneSurvives(pcm, 440, 12_000, 16_000);
+        } finally {
+            Files.deleteIfExists(preview);
+        }
+        assertTrue(Files.size(original) > 0);
+    }
+
+    @Test
     void missingInputDoesNotCreateTemporaryFile() throws Exception {
         SubtitleAudioExtractor extractor = new SubtitleAudioExtractor(directory);
         assertThrows(IOException.class, () -> extractor.extract(directory.resolve("missing.mp4")));
@@ -177,8 +195,12 @@ class SubtitleAudioExtractorTest {
     }
 
     private static void writeStereoPcmAudio(Path output) throws Exception {
+        writeStereoPcmAudio(output, 0.5);
+    }
+
+    private static void writeStereoPcmAudio(Path output, double seconds) throws Exception {
         int sampleRate = 44_100;
-        int frames = sampleRate / 2;
+        int frames = (int) Math.round(sampleRate * seconds);
         byte[] pcm = new byte[frames * 2 * Short.BYTES];
         for (int frame = 0; frame < frames; frame++) {
             short sample = (short) (Math.sin(2 * Math.PI * 440 * frame / sampleRate) * 12_000);

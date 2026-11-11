@@ -44,6 +44,22 @@ public final class SubtitleAudioExtractor {
     }
 
     public Path extract(Path mediaFile) throws IOException {
+        return extractLimited(mediaFile, Long.MAX_VALUE);
+    }
+
+    /**
+     * Extracts only an opening preview for faster first captions. Times start at
+     * media position zero, so Whisper timestamps can be displayed unchanged.
+     * A separate full extraction is still required to cover the remainder.
+     */
+    public Path extractFirstSeconds(Path mediaFile, int seconds) throws IOException {
+        if (seconds < 1 || seconds > 60) {
+            throw new IllegalArgumentException("Preview length must be between 1 and 60 seconds");
+        }
+        return extractLimited(mediaFile, (long) SAMPLE_RATE * seconds);
+    }
+
+    private Path extractLimited(Path mediaFile, long limitSamples) throws IOException {
         Objects.requireNonNull(mediaFile, "mediaFile");
         if (!Files.isRegularFile(mediaFile)) {
             throw new IOException("Media file does not exist: " + mediaFile);
@@ -52,7 +68,7 @@ public final class SubtitleAudioExtractor {
         Path temporaryWav = Files.createTempFile(temporaryDirectory, "comp3011-subtitles-", ".wav");
         boolean completed = false;
         try {
-            extractTo(mediaFile, temporaryWav);
+            extractTo(mediaFile, temporaryWav, limitSamples);
             if (Files.size(temporaryWav) <= WAV_HEADER_BYTES) {
                 throw new IOException("No audio samples were extracted from the media");
             }
@@ -65,7 +81,7 @@ public final class SubtitleAudioExtractor {
         }
     }
 
-    private static void extractTo(Path mediaFile, Path temporaryWav) throws IOException {
+    private static void extractTo(Path mediaFile, Path temporaryWav, long limitSamples) throws IOException {
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(mediaFile.toFile())) {
             // Let FFmpeg's decoder/resampler perform the conversion ONCE.
             // In SHORT mode the grabber supplies signed 16-bit samples.
@@ -85,7 +101,7 @@ public final class SubtitleAudioExtractor {
                 long sampleCount = 0;
                 byte[] chunk = new byte[CHUNK_SAMPLES * Short.BYTES];
                 Frame frame;
-                while ((frame = grabber.grabSamples()) != null) {
+                while (sampleCount < limitSamples && (frame = grabber.grabSamples()) != null) {
                     if (Thread.currentThread().isInterrupted()) {
                         throw new IOException("Audio extraction was interrupted");
                     }
@@ -97,7 +113,8 @@ public final class SubtitleAudioExtractor {
                         throw new IOException("Decoder returned unexpected audio format instead of 16 kHz mono PCM");
                     }
                     ShortBuffer samples = ((ShortBuffer) frame.samples[0]).duplicate();
-                    int remaining = samples.remaining();
+                    int remaining = (int) Math.min(samples.remaining(), limitSamples - sampleCount);
+                    samples.limit(samples.position() + remaining);
                     if (remaining > (MAX_WAV_BYTES - WAV_HEADER_BYTES - sampleCount * Short.BYTES)
                             / Short.BYTES) {
                         throw new IOException("Audio is too long for a single Whisper upload (24 MB WAV limit)");

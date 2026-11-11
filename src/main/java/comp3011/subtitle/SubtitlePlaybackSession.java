@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
+import java.util.function.Consumer;
 
 /**
  * Owns the subtitle request and published timeline for the video currently playing.
@@ -21,9 +22,15 @@ import java.util.function.Function;
  */
 public final class SubtitlePlaybackSession implements AutoCloseable {
     /** Observable request state, published across the HTTP and JavaFX threads. */
-    public enum RequestState { IDLE, LOADING, READY, FAILED }
+    public enum RequestState { IDLE, LOADING, PARTIAL, READY, FAILED }
 
-    private final Function<Path, CompletableFuture<SubtitleTranscript>> request;
+    /** Can deliver opening captions before the full transcription completes. */
+    @FunctionalInterface
+    interface ProgressiveRequest {
+        CompletableFuture<SubtitleTranscript> start(Path media, Consumer<SubtitleTranscript> preview);
+    }
+
+    private final ProgressiveRequest request;
     private final AutoCloseable resource;
     private final Object lock = new Object();
 
@@ -42,12 +49,25 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
     }
 
     private SubtitlePlaybackSession(SubtitleTranscriptionCoordinator coordinator) {
-        this(coordinator::transcribe, coordinator);
+        this((ProgressiveRequest) (media, onPreview) -> fastPreviewEnabled()
+                ? coordinator.transcribeProgressively(media, onPreview)
+                : coordinator.transcribe(media), coordinator);
     }
 
-    // Test seam: avoids actual FFmpeg, HTTP requests and billing in unit tests.
+    /** Opt in because a preview also incurs Whisper usage for the opening audio. */
+    private static boolean fastPreviewEnabled() {
+        return "1".equals(System.getenv("COMP3011_FAST_SUBTITLES"))
+                || Boolean.getBoolean("comp3011.fastSubtitles");
+    }
+
+    // Existing offline test seam: one transcript only, no cloud work.
     SubtitlePlaybackSession(Function<Path, CompletableFuture<SubtitleTranscript>> request,
                             AutoCloseable resource) {
+        this((media, ignored) -> request.apply(media), resource);
+    }
+
+    // Progressive offline test seam: preview and full callbacks can be controlled.
+    SubtitlePlaybackSession(ProgressiveRequest request, AutoCloseable resource) {
         this.request = Objects.requireNonNull(request, "request");
         this.resource = Objects.requireNonNull(resource, "resource");
     }
@@ -114,7 +134,8 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
         lastFailure = null;
         CompletableFuture<SubtitleTranscript> future;
         try {
-            future = Objects.requireNonNull(request.apply(media), "transcription future");
+            future = Objects.requireNonNull(request.start(media,
+                    preview -> publishPreview(preview, requestedGeneration)), "transcription future");
         } catch (RuntimeException failure) {
             lastFailure = failure;
             requestState = RequestState.FAILED;
@@ -148,6 +169,24 @@ public final class SubtitlePlaybackSession implements AutoCloseable {
             // Diagnostic I/O is opt-in and never runs while holding the session lock.
             SubtitleSrtExporter.exportIfRequested(transcript, successfulTimeline);
         });
+    }
+
+    /** Publish opening captions only for the current, unfinished request. */
+    private void publishPreview(SubtitleTranscript preview, long requestedGeneration) {
+        try {
+            SubtitleTimeline preliminary = SubtitleTimeline.fromTranscript(preview);
+            synchronized (lock) {
+                if (closed || generation != requestedGeneration || ready
+                        || (requestState != RequestState.LOADING
+                            && requestState != RequestState.PARTIAL)) {
+                    return;
+                }
+                timeline = preliminary;
+                requestState = RequestState.PARTIAL;
+            }
+        } catch (RuntimeException badPreview) {
+            // An unusable early result must never prevent the full request succeeding.
+        }
     }
 
     @Override

@@ -721,6 +721,12 @@ public class VideoPlayerModel {
                 notifyStatusChanged("Subtitles: extracting / uploading audio...");
                 System.err.println("[subtitles] Preparing original media audio and contacting localhost:8080");
             }
+            case PARTIAL -> {
+                int count = subtitleSession.timeline().cues().size();
+                notifyStatusChanged("Subtitles: opening captions ready (" + count + " phrases)");
+                System.err.println("[subtitles] Opening preview received; " + count
+                        + " phrases available; full transcription still loading");
+            }
             case READY -> {
                 int count = subtitleSession.timeline().cues().size();
                 notifyStatusChanged(count == 0
@@ -730,8 +736,12 @@ public class VideoPlayerModel {
             }
             case FAILED -> {
                 String reason = subtitleFailureHint(subtitleSession.lastFailure());
-                notifyStatusChanged("Subtitles unavailable: " + reason);
-                System.err.println("[subtitles] Transcription failed: " + reason);
+                boolean hasPreview = !subtitleSession.timeline().cues().isEmpty();
+                notifyStatusChanged(hasPreview
+                        ? "Full subtitles unavailable; opening preview remains"
+                        : "Subtitles unavailable: " + reason);
+                System.err.println("[subtitles] Transcription failed: " + reason
+                        + (hasPreview ? " (opening captions remain visible)" : ""));
             }
             case IDLE -> { /* No media is currently being transcribed. */ }
         }

@@ -12,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.Consumer;
 
 /**
  * Connects original-media audio extraction with the asynchronous subtitle server.
@@ -37,6 +38,7 @@ public final class SubtitleTranscriptionCoordinator implements AutoCloseable {
     }
 
     private final AudioExtraction extraction;
+    private final AudioExtraction previewExtraction;
     private final Function<Path, CompletableFuture<SubtitleTranscript>> upload;
     private final ExecutorService extractionExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -44,6 +46,7 @@ public final class SubtitleTranscriptionCoordinator implements AutoCloseable {
 
     public SubtitleTranscriptionCoordinator() {
         this(new SubtitleAudioExtractor()::extract,
+                media -> new SubtitleAudioExtractor().extractFirstSeconds(media, 20),
                 new SubtitleApiClient()::transcribe,
                 Executors.newSingleThreadExecutor(task -> {
                     Thread thread = new Thread(task, "subtitle-audio-extraction");
@@ -57,7 +60,17 @@ public final class SubtitleTranscriptionCoordinator implements AutoCloseable {
             AudioExtraction extraction,
             Function<Path, CompletableFuture<SubtitleTranscript>> upload,
             ExecutorService extractionExecutor) {
+        this(extraction, null, upload, extractionExecutor);
+    }
+
+    // Preview extractor is separately injectable for deterministic no-network tests.
+    SubtitleTranscriptionCoordinator(
+            AudioExtraction extraction,
+            AudioExtraction previewExtraction,
+            Function<Path, CompletableFuture<SubtitleTranscript>> upload,
+            ExecutorService extractionExecutor) {
         this.extraction = Objects.requireNonNull(extraction, "extraction");
+        this.previewExtraction = previewExtraction;
         this.upload = Objects.requireNonNull(upload, "upload");
         this.extractionExecutor = Objects.requireNonNull(extractionExecutor, "extractionExecutor");
     }
@@ -70,6 +83,22 @@ public final class SubtitleTranscriptionCoordinator implements AutoCloseable {
      * Cancelling the returned future stops work that has not yet reached upload.
      */
     public CompletableFuture<SubtitleTranscript> transcribe(Path mediaFile) {
+        return submit(mediaFile, null);
+    }
+
+    /**
+     * Opt-in two-phase request. An opening 20-second WAV is uploaded first,
+     * while the complete audio is extracted and uploaded independently.
+     * An early failure never prevents the full transcript from arriving.
+     */
+    public CompletableFuture<SubtitleTranscript> transcribeProgressively(
+            Path mediaFile, Consumer<SubtitleTranscript> previewConsumer) {
+        Objects.requireNonNull(previewConsumer, "previewConsumer");
+        return submit(mediaFile, previewConsumer);
+    }
+
+    private CompletableFuture<SubtitleTranscript> submit(
+            Path mediaFile, Consumer<SubtitleTranscript> previewConsumer) {
         Objects.requireNonNull(mediaFile, "mediaFile");
         if (closed.get()) {
             return CompletableFuture.failedFuture(new IllegalStateException("Subtitle coordinator is closed"));
@@ -85,11 +114,55 @@ public final class SubtitleTranscriptionCoordinator implements AutoCloseable {
             return result;
         }
         try {
-            extractionExecutor.execute(() -> extractAndUpload(mediaFile, result));
+            extractionExecutor.execute(() -> {
+                if (previewConsumer != null && previewExtraction != null) {
+                    startPreviewUpload(mediaFile, result, previewConsumer);
+                }
+                extractAndUpload(mediaFile, result);
+            });
         } catch (RejectedExecutionException rejected) {
             result.completeExceptionally(new IllegalStateException("Subtitle extraction cannot start", rejected));
         }
         return result;
+    }
+
+    /** An independent preview upload must always clean up its own temporary WAV. */
+    private void startPreviewUpload(Path mediaFile, CompletableFuture<SubtitleTranscript> result,
+                                    Consumer<SubtitleTranscript> previewConsumer) {
+        Path previewWav = null;
+        try {
+            if (result.isDone() || closed.get()) {
+                return;
+            }
+            previewWav = Objects.requireNonNull(previewExtraction.extract(mediaFile), "preview WAV");
+            if (result.isDone() || closed.get()) {
+                return;
+            }
+            CompletableFuture<SubtitleTranscript> previewResponse = Objects.requireNonNull(
+                    upload.apply(previewWav), "preview upload future");
+            Path uploadedWav = previewWav;
+            previewWav = null; // The callback owns it until HTTP finishes reading.
+            previewResponse.whenComplete((preview, error) -> {
+                try {
+                    Files.deleteIfExists(uploadedWav);
+                    if (error == null && preview != null && !closed.get() && !result.isDone()) {
+                        previewConsumer.accept(preview);
+                    }
+                } catch (IOException | RuntimeException ignored) {
+                    // Preview is best effort; the full transcription is authoritative.
+                }
+            });
+        } catch (IOException | RuntimeException ignored) {
+            // A preview failure must not prevent the normal full-audio request.
+        } finally {
+            if (previewWav != null) {
+                try {
+                    Files.deleteIfExists(previewWav);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup. Never suppress the full request.
+                }
+            }
+        }
     }
 
     private void extractAndUpload(Path mediaFile, CompletableFuture<SubtitleTranscript> result) {
