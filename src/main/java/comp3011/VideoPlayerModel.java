@@ -491,9 +491,10 @@ public class VideoPlayerModel {
         currentTimestampUs = clock.logicalTimestampUs(video.timestampUs());
         relativeSeekBaseUs = NO_SEEK_REQUEST;
 
-        // Dump some logging to the console once per second so that real time performance can be monitored. The headroom
-        // is how long before its due time the frame was ready. Negative means the frame was late.
-        if (intFrameRate > 0 && video.frameNumber() % intFrameRate == 0) {
+        // Writing to a captured stdout pipe can block the JavaFX thread once its buffer fills.
+        // Keep the per-second frame headroom log strictly opt-in so unattended playback
+        // (including TITAN) cannot stall behind an unread console pipe.
+        if (playbackDiagnostics != null && intFrameRate > 0 && video.frameNumber() % intFrameRate == 0) {
             long remainingUs = (targetTimeNs - video.preparedAtNs()) / 1_000L;
             if (remainingUs < 0) {
                 System.out.printf("Frame headroom is \u001B[31m%5dus\u001B[0m out of %dus spare.%n",
@@ -721,12 +722,6 @@ public class VideoPlayerModel {
                 notifyStatusChanged("Subtitles: extracting / uploading audio...");
                 System.err.println("[subtitles] Preparing original media audio and contacting localhost:8080");
             }
-            case PARTIAL -> {
-                int count = subtitleSession.timeline().cues().size();
-                notifyStatusChanged("Subtitles: opening captions ready (" + count + " phrases)");
-                System.err.println("[subtitles] Opening preview received; " + count
-                        + " phrases available; full transcription still loading");
-            }
             case READY -> {
                 int count = subtitleSession.timeline().cues().size();
                 notifyStatusChanged(count == 0
@@ -736,12 +731,8 @@ public class VideoPlayerModel {
             }
             case FAILED -> {
                 String reason = subtitleFailureHint(subtitleSession.lastFailure());
-                boolean hasPreview = !subtitleSession.timeline().cues().isEmpty();
-                notifyStatusChanged(hasPreview
-                        ? "Full subtitles unavailable; opening preview remains"
-                        : "Subtitles unavailable: " + reason);
-                System.err.println("[subtitles] Transcription failed: " + reason
-                        + (hasPreview ? " (opening captions remain visible)" : ""));
+                notifyStatusChanged("Subtitles unavailable: " + reason);
+                System.err.println("[subtitles] Transcription failed: " + reason);
             }
             case IDLE -> { /* No media is currently being transcribed. */ }
         }
