@@ -13,6 +13,9 @@ import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -151,6 +154,121 @@ class CachedSubtitleServiceTest {
         cache.transcribe(audio("two.wav", "same"));
         assertEquals(2.5, usage.getSeconds());
         remote.verify();
+    }
+
+    @Test
+    void excerptOfPreviouslyTranscribedMovieDoesNotBillAgainAndRebasesWords() {
+        short[] movie = waveform(65, 1);
+        int startSample = 21 * 16_000 + 5_431; // not aligned to a WAV energy window
+        int clipSamples = 25 * 16_000;
+        short[] excerptSamples = Arrays.copyOfRange(movie, startSample, startSample + clipSamples);
+        // Simulate slightly different decoded samples from AAC re-encoding.
+        for (int i = 0; i < excerptSamples.length; i++) {
+            excerptSamples[i] = (short) (excerptSamples[i] * 0.96);
+        }
+        SubtitleResponse movieTranscript = new SubtitleResponse("Before. In the clip. After.", 65,
+                List.of(new SubtitleResponse.Segment(5, 8, "Before.", 0.1, -0.3),
+                        new SubtitleResponse.Segment(22, 25, "In the clip.", 0.1, -0.3),
+                        new SubtitleResponse.Segment(55, 58, "After.", 0.1, -0.3)),
+                List.of(new SubtitleResponse.Word(5, 6, "Before."),
+                        new SubtitleResponse.Word(22, 22.5, "In"),
+                        new SubtitleResponse.Word(23, 23.5, "the"),
+                        new SubtitleResponse.Word(24, 24.5, "clip."),
+                        new SubtitleResponse.Word(56, 57, "After.")));
+        AtomicInteger calls = new AtomicInteger();
+        var service = new CachedSubtitleService(file -> {
+            calls.incrementAndGet();
+            return movieTranscript;
+        });
+        service.transcribe(wav("movie.wav", movie));
+        SubtitleResponse clip = service.transcribe(wav("clip.wav", excerptSamples));
+        assertEquals(1, calls.get(), "a matching audio fragment must not call Whisper twice");
+        assertEquals(25, clip.duration(), 0.001);
+        assertEquals(1, clip.segments().size());
+        assertEquals("In the clip.", clip.segments().getFirst().text());
+        assertEquals(3, clip.words().size());
+        assertEquals(22 - startSample / 16_000.0, clip.words().getFirst().start(), 0.075);
+        assertEquals("In the clip.", clip.text());
+        // Subsequent requests for the excerpt itself are still exact cache hits.
+        assertEquals(clip, service.transcribe(wav("renamed-clip.wav", excerptSamples)));
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void excerptMatchingSupportsWavWithAdditionalRiffMetadata() throws IOException {
+        short[] movie = waveform(40, 3);
+        short[] clip = Arrays.copyOfRange(movie, 10 * 16_000, 25 * 16_000);
+        byte[] rawMovie = wav("original.wav", movie).getBytes();
+        // Insert an ordinary LIST chunk between the fmt and data chunks.
+        ByteBuffer withMetadata = ByteBuffer.allocate(rawMovie.length + 12)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        withMetadata.put(rawMovie, 0, 36);
+        withMetadata.put("LIST".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        withMetadata.putInt(4);
+        withMetadata.put("TEST".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        withMetadata.put(rawMovie, 36, rawMovie.length - 36);
+        withMetadata.putInt(4, withMetadata.capacity() - 8); // RIFF length
+        AtomicInteger calls = new AtomicInteger();
+        var service = new CachedSubtitleService(file -> {
+            calls.incrementAndGet();
+            return new SubtitleResponse("test", 40,
+                    List.of(new SubtitleResponse.Segment(11, 12, "test", 0, -0.2)),
+                    List.of(new SubtitleResponse.Word(11, 12, "test")));
+        });
+        service.transcribe(new MockMultipartFile("audio", "original.wav", "audio/wav", withMetadata.array()));
+        SubtitleResponse result = service.transcribe(wav("clip.wav", clip));
+        assertEquals(1, calls.get());
+        assertEquals(1, result.words().size());
+        assertEquals(1.0, result.words().getFirst().start(), 0.075);
+    }
+
+    @Test
+    void differentRecordingsCannotBorrowAnotherRecordingSubtitleExcerpt() {
+        AtomicInteger calls = new AtomicInteger();
+        var service = new CachedSubtitleService(file -> {
+            calls.incrementAndGet();
+            return RESULT;
+        });
+        service.transcribe(wav("original.wav", waveform(54, 1)));
+        service.transcribe(wav("unrelated.wav", waveform(25, 8)));
+        assertEquals(2, calls.get());
+    }
+
+    @Test
+    void silenceIsNotSufficientEvidenceOfAnExcerptMatch() {
+        AtomicInteger calls = new AtomicInteger();
+        var service = new CachedSubtitleService(file -> {
+            calls.incrementAndGet();
+            return RESULT;
+        });
+        service.transcribe(wav("silent-original.wav", new short[40 * 16_000]));
+        service.transcribe(wav("silent-excerpt.wav", new short[20 * 16_000]));
+        assertEquals(2, calls.get());
+    }
+
+    private static short[] waveform(int seconds, int seed) {
+        short[] samples = new short[seconds * 16_000];
+        for (int i = 0; i < samples.length; i++) {
+            double t = i / 16_000.0;
+            double envelope = 0.11 + 0.18 * Math.pow(Math.sin(t * (0.19 + seed * 0.073)), 2)
+                    + 0.15 * Math.pow(Math.cos(t * (0.6 + seed * 0.13)), 2);
+            double carrier = Math.sin(t * (1400 + seed * 23) + Math.sin(t * 1.1) * 2);
+            samples[i] = (short) (carrier * envelope * Short.MAX_VALUE);
+        }
+        return samples;
+    }
+
+    private static MockMultipartFile wav(String name, short[] samples) {
+        ByteBuffer buffer = ByteBuffer.allocate(44 + samples.length * 2).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(36 + samples.length * 2);
+        buffer.put("WAVEfmt ".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(16).putShort((short) 1).putShort((short) 1);
+        buffer.putInt(16_000).putInt(32_000).putShort((short) 2).putShort((short) 16);
+        buffer.put("data".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(samples.length * 2);
+        for (short sample : samples) buffer.putShort(sample);
+        return new MockMultipartFile("audio", name, "audio/wav", buffer.array());
     }
 
     @Test

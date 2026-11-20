@@ -19,8 +19,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
 /**
- * Reuses successful Whisper results for identical uploaded audio. The cache
- * contains transcripts, not audio, and is bounded to 16 recent recordings.
+ * Reuses successful Whisper results for identical audio and strongly matching excerpts. The cache
+ * retains transcripts and compact signal fingerprints, not audio samples,
+ * and is bounded to 16 recent recordings.
  * In-flight requests are shared so concurrent clients cannot bill the same
  * recording multiple times simply by arriving together.
  *
@@ -37,10 +38,13 @@ public final class CachedSubtitleService implements SubtitleService {
     private final SubtitleService whisper;
     private final Object lock = new Object();
     // Access ordering evicts the least recently *used* completed transcript.
-    private final LinkedHashMap<String, SubtitleResponse> completed =
+    private final LinkedHashMap<String, CacheEntry> completed =
             new LinkedHashMap<>(16, 0.75f, true);
     private final Map<String, CompletableFuture<SubtitleResponse>> inFlight =
             new java.util.HashMap<>();
+
+    private record CacheEntry(SubtitleResponse transcript,
+                              WaveformExcerptMatcher.Fingerprint fingerprint) {}
 
     public CachedSubtitleService(@Qualifier("whisperSubtitleService") SubtitleService whisper) {
         this.whisper = whisper;
@@ -53,12 +57,46 @@ public final class CachedSubtitleService implements SubtitleService {
         }
 
         String key = sha256(audioFile);
+        // Keep the original fast exact-hit path: avoid parsing WAV again when
+        // an identical request has already been cached.
+        synchronized (lock) {
+            CacheEntry exact = completed.get(key);
+            if (exact != null) {
+                return exact.transcript();
+            }
+        }
+        // A fingerprint is optional; legacy and non-PCM uploads still benefit
+        // from exact SHA-256 caching without any change of behaviour.
+        WaveformExcerptMatcher.Fingerprint fingerprint;
+        try {
+            fingerprint = WaveformExcerptMatcher.read(audioFile.getInputStream(), audioFile.getSize());
+        } catch (IOException ignored) {
+            fingerprint = null;
+        }
         CompletableFuture<SubtitleResponse> pending;
         boolean owner = false;
         synchronized (lock) {
-            SubtitleResponse existing = completed.get(key);
+            CacheEntry existing = completed.get(key);
             if (existing != null) {
-                return existing;
+                return existing.transcript();
+            }
+            // A shorter WAV may contain audio already processed as part of
+            // a longer video. Only reuse it after a high-confidence match.
+            if (fingerprint != null) {
+                SubtitleResponse clipped = null;
+                for (CacheEntry candidate : completed.values()) {
+                    Double offset = WaveformExcerptMatcher.findOffsetSeconds(
+                            candidate.fingerprint(), fingerprint);
+                    if (offset != null) {
+                        clipped = WaveformExcerptMatcher.excerpt(
+                                candidate.transcript(), offset, fingerprint.durationSeconds());
+                        break;
+                    }
+                }
+                if (clipped != null) {
+                    putCompleted(key, new CacheEntry(clipped, fingerprint));
+                    return clipped;
+                }
             }
             pending = inFlight.get(key);
             if (pending == null) {
@@ -68,18 +106,15 @@ public final class CachedSubtitleService implements SubtitleService {
             }
         }
 
+        // Effectively final for the asynchronous-owner branch.
+        WaveformExcerptMatcher.Fingerprint fingerprintForStore = fingerprint;
         if (owner) {
             try {
                 // Never hold the cache lock across an outbound network request.
                 SubtitleResponse result = java.util.Objects.requireNonNull(
                         whisper.transcribe(audioFile), "Whisper response must not be null");
                 synchronized (lock) {
-                    completed.put(key, result);
-                    if (completed.size() > MAX_ENTRIES) {
-                        Iterator<String> keys = completed.keySet().iterator();
-                        keys.next();
-                        keys.remove();
-                    }
+                    putCompleted(key, new CacheEntry(result, fingerprintForStore));
                 }
                 pending.complete(result);
                 return result;
@@ -108,6 +143,16 @@ public final class CachedSubtitleService implements SubtitleService {
                 throw error;
             }
             throw new TranscriptionException("Unable to retrieve subtitles from Whisper");
+        }
+    }
+
+    /** Must be called with lock held. */
+    private void putCompleted(String key, CacheEntry entry) {
+        completed.put(key, entry);
+        if (completed.size() > MAX_ENTRIES) {
+            Iterator<String> keys = completed.keySet().iterator();
+            keys.next();
+            keys.remove();
         }
     }
 
