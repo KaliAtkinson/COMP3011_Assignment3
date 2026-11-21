@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $server 'pom.xml'))) {
 
 if ([string]::IsNullOrWhiteSpace($OutputZip)) {
     # Keep the submission outside the Git repository by default.
-    $OutputZip = Join-Path (Split-Path -Parent $repo) 'COMP3011_TITAN.zip'
+    $OutputZip = Join-Path (Split-Path -Parent $repo) 'COMP3011_TITAN_REBUILT.zip'
 }
 $OutputZip = [System.IO.Path]::GetFullPath($OutputZip)
 $outputDirectory = Split-Path -Parent $OutputZip
