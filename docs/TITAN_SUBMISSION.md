@@ -1,29 +1,86 @@
-# Assignment 3 — reproducible TITAN submission
+# COMP3011 Assignment 3 — reproducible TITAN submission
 
-The TITAN smoke checks previously passed with **one executable Spring Boot server JAR at the ZIP root** and **Assignment 2's Maven JavaFX project at the ZIP root**. In particular, TITAN invokes `mvn javafx:run -Djavafx.args=--help` in its working directory.
+The tested TITAN archive layout places the **JavaFX Maven project at ZIP root**,
+including `pom.xml` and `src/`. TITAN runs `mvn javafx:run` from that root. The
+executable Spring Boot **server JAR must also be directly at ZIP root**.
+`Assignment1/` contains server source but is not TITAN's JavaFX working directory.
 
-Use `scripts/build-titan-submission.ps1` from PowerShell on Windows after committing your working changes. It runs `mvn clean verify` for both projects, copies only required project sources and the newly built Spring Boot JAR, and creates `COMP3011_TITAN.zip` **in the parent directory of the repository**. No `-Pfat-jar` is used.
+The current repository already has the JavaFX `pom.xml` and `src/` at root.
+Do **not** use the older packaging script variant that expects an `Assignment2/`
+subdirectory.
 
-From the combined repository directory:
+## Preserve the exact passing artifact first
+
+The most recent submitted ZIP passed **all 16 TITAN checks**. Keep that exact
+archive unchanged (outside Git) and record its SHA-256 before attempting any
+fresh packaging. A rebuilt archive should be considered a **new candidate**
+until it passes TITAN, even if its source is equivalent.
 
 ```powershell
-& .\scripts\build-titan-submission.ps1
+# Replace the path with the archive that actually achieved 16/16.
+Copy-Item '..\COMP3011_TITAN.zip' '..\COMP3011_TITAN_16of16_BACKUP.zip'
+Get-FileHash '..\COMP3011_TITAN_16of16_BACKUP.zip' -Algorithm SHA256
 ```
 
-If PowerShell blocks execution due to script policy, use:
+## Build the submission
+
+From the repository root in PowerShell:
+
+```powershell
+& .\scripts\build-titan-submission.ps1 -OutputZip '..\COMP3011_TITAN_REBUILT.zip'
+```
+
+The script runs `mvn clean verify` for **both** projects and rebuilds the server
+JAR. The example above puts the **new** ZIP beside the original without
+overwriting the proven passing artifact. If no `-OutputZip` is supplied, the
+script's default in this finalisation bundle is `COMP3011_TITAN_REBUILT.zip`
+in the repository's parent directory, so it does not overwrite the passing ZIP.
+To specify a different output path:
+
+```powershell
+& .\scripts\build-titan-submission.ps1 -OutputZip 'C:\path\COMP3011_TITAN.zip'
+```
+
+If PowerShell's script execution policy blocks it:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-titan-submission.ps1
 ```
 
-To choose an output filename, pass `-OutputZip 'C:\path\COMP3011_TITAN.zip'`.
+This changes the execution policy for that one process only.
 
-Check the archive before submitting:
+## Check the ZIP
 
 ```powershell
-tar -tf ..\COMP3011_TITAN.zip | Select-Object -First 15
+tar -tf ..\COMP3011_TITAN_REBUILT.zip | Select-Object -First 20
 ```
 
-The archive must have `pom.xml`, `src/` and the server JAR **directly at the top level**. There is no video file, `.git` directory, `target` directory, API key, `.env` file, or video-player fat JAR in the submission. The build includes server source under `Assignment1/` solely for inspection and grading.
+The archive should have entries like these, **without an enclosing folder**:
 
-The script validates the expected ZIP structure, but does not run the TITAN service itself. Passing TITAN's four initial checks verifies launch/usage/help only; test caption quality, seek and toggle behaviour, and failure handling separately.
+```text
+pom.xml
+src/main/java/comp3011/VideoPlayerApp.java
+Assignment1/pom.xml
+Assignment1/src/...
+scripts/build-titan-submission.ps1
+kali-0.0.1-SNAPSHOT.jar
+```
+
+The final JAR name may follow the server's `pom.xml` version. The script
+includes exactly one rebuilt server JAR at ZIP root and excludes Maven `target/`
+directories, `.git/`, `.env`, local video files and other generated artifacts.
+It does not require an API key to build, and it does not include your key.
+
+**The packaging script does not run TITAN itself.** A passing Maven build proves
+that local tests passed, but the final video-playback and subtitle behaviour must
+still be checked against the latest TITAN report.
+
+## Runtime-specific caution
+
+The player suppresses the periodic `Frame headroom` messages during ordinary
+playback. Those diagnostic lines must remain opt-in: TITAN's earlier
+output-capture arrangement appeared to block JavaFX when the console pipe
+filled, stopping at frame 2,807. The silent-by-default version displayed
+frame **3,288** and passed T06. The transcript/excerpt cache also passed T13–T15.
+Do not mix the old final-frame-hold experiments, probe classes or diagnostic
+logging back into the passing source.
